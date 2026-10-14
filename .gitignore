@@ -1,0 +1,29 @@
+# 密钥与本地配置（绝不提交）
+.env
+.env.*
+!.env.example
+
+# 行情数据（数据商授权，不上传）
+data/
+
+# 运行产物
+output/
+*.log
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+build/
+dist/
+
+# IDE
+.idea/workspace.xml
+.idea/shelf/
+
+# 工具缓存
+.import_linter_cache/

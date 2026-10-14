@@ -1,0 +1,61 @@
+[project]
+name = "stock-risk"
+version = "0.1.0"
+description = "单只美股风险预警与解除（探索阶段）"
+requires-python = ">=3.13"
+dependencies = []
+
+[project.scripts]
+stock-risk = "stock_risk.interfaces.cli.main:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "import-linter>=2",
+    "ruff>=0.6",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/stock_risk"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
+
+# 分层依赖契约：上层可依赖下层，反向禁止。见 docs/develop_docs/01-项目结构与分层.md
+[tool.importlinter]
+root_package = "stock_risk"
+
+[[tool.importlinter.contracts]]
+name = "分层：interfaces → bootstrap → application → domain；infrastructure 只实现端口"
+type = "layers"
+layers = [
+    "stock_risk.interfaces",
+    "stock_risk.bootstrap",
+    "stock_risk.infrastructure",
+    "stock_risk.application",
+    "stock_risk.domain",
+]
+
+[[tool.importlinter.contracts]]
+name = "domain 保持纯净：不依赖 config 与任何 I/O 层"
+type = "forbidden"
+source_modules = ["stock_risk.domain"]
+forbidden_modules = [
+    "stock_risk.config",
+    "stock_risk.application",
+    "stock_risk.infrastructure",
+    "stock_risk.interfaces",
+    "stock_risk.bootstrap",
+]
