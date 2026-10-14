@@ -22,8 +22,7 @@ build/
 dist/
 
 # IDE
-.idea/workspace.xml
-.idea/shelf/
+.idea/
 
 # 工具缓存
 .import_linter_cache/
