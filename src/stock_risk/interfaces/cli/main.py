@@ -21,6 +21,7 @@ from stock_risk.application.market_data_loader import DOWNLOAD_START
 from stock_risk.bootstrap import (
     build_audit_raw_data_service,
     build_check_calendar_service,
+    build_compare_service,
     build_fetch_raw_data_service,
     build_replay_run_service,
     build_show_ranges_service,
@@ -124,6 +125,35 @@ def _cmd_regress_v0(args: argparse.Namespace) -> int:
     return 0 if report.identical else 1
 
 
+def _cmd_compare(args: argparse.Namespace) -> int:
+    from datetime import datetime
+
+    service = build_compare_service(load_settings())
+    only = [s for s in args.sets.split(",") if s.strip()] if args.sets else None
+    symbols = [s for s in args.symbols.split(",") if s.strip()] if args.symbols else None
+    m = service.run(
+        datetime.now().astimezone(),
+        lambda: datetime.now().astimezone(),
+        workers=args.workers,
+        only_sets=only,
+        symbols=symbols,
+    )
+    print(f"run_id = {m['run_id']}（{m['run_kind']}），用时 {m['elapsed_seconds']} 秒")
+    print(
+        f"完成 {len(m['completed_sets'])} 套；失败 {len(m['failed'])} 项；"
+        f"不变量违反 {m['invariant_violations']} 项；程序检查问题 "
+        f"{m['program_check_problem_count']} 项；I17 ② {'通过' if m['i17_ok'] else '不通过'}"
+    )
+    print(f"输出目录：{m['run_dir']}")
+    ok = (
+        not m["failed"]
+        and not m["invariant_violations"]
+        and not m["program_check_problem_count"]
+        and m["i17_ok"]
+    )
+    return 0 if ok else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="stock-risk")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -147,6 +177,12 @@ def main(argv: list[str] | None = None) -> int:
     rp.add_argument("--symbols", default="", help="只回放这些个股，逗号分隔")
     rp.add_argument("--workers", type=int, default=None, help="all 模式的进程数，默认 CPU 数 − 1")
     rp.set_defaults(func=_cmd_replay)
+
+    cp = sub.add_parser("compare", help="T06 对照回放：624 套 × 27 只个股，对照表与时间线")
+    cp.add_argument("--workers", type=int, default=None, help="进程数，默认 CPU 数 − 1")
+    cp.add_argument("--sets", default="", help="调试用：只运行这些套（自动加上基准），逗号分隔")
+    cp.add_argument("--symbols", default="", help="调试用：只运行这些个股")
+    cp.set_defaults(func=_cmd_compare)
 
     rg = sub.add_parser(
         "regress-v0", help="V0 真实数据回归：与一次正式运行的原有列逐值比较（T06a）"

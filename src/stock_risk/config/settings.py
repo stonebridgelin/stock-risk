@@ -61,6 +61,10 @@ class Settings:
         return self.project_root / "output" / "calendar_check"
 
     @property
+    def compare_output_dir(self) -> Path:
+        return self.project_root / "output" / "compare"
+
+    @property
     def replay_output_dir(self) -> Path:
         return self.project_root / "output" / "replay"
 

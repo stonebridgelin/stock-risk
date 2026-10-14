@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from stock_risk.application.audit_raw_data import AuditRawDataService
 from stock_risk.application.check_calendar import CheckCalendarService
+from stock_risk.application.compare.service import CompareService
 from stock_risk.application.fetch_raw_data import FetchRawDataService
 from stock_risk.application.market_data_loader import MarketDataLoader
 from stock_risk.application.replay import ReplayService
@@ -11,6 +12,7 @@ from stock_risk.application.replay_run import ReplayRunService
 from stock_risk.application.show_ranges import ShowRangesService
 from stock_risk.config.settings import Settings
 from stock_risk.infrastructure.calendars.xnys import ExchangeCalendarsXnys
+from stock_risk.infrastructure.replay.compare_files import CompareFileSink
 from stock_risk.infrastructure.replay.environment import LocalRunEnvironment
 from stock_risk.infrastructure.replay.files import ReplayFileSink
 from stock_risk.infrastructure.storage.audit_report_writer import AuditReportFileWriter
@@ -92,3 +94,11 @@ def build_replay_run_service(settings: Settings) -> ReplayRunService:
 def build_v0_regression(settings: Settings) -> tuple[ReplayService, ReplayFileSink]:
     """V0 真实数据回归（T06a）所需的回放用例与表格读写。"""
     return build_replay_service(settings), ReplayFileSink(settings.replay_output_dir)
+
+
+def build_compare_service(settings: Settings) -> CompareService:
+    return CompareService(
+        replay=build_replay_service(settings),
+        sink=CompareFileSink(settings.compare_output_dir),
+        env=LocalRunEnvironment(settings.project_root),
+    )
