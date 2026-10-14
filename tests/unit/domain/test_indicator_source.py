@@ -12,10 +12,11 @@ from stock_risk.domain.indicator_source import (
     compute_r2,
 )
 from stock_risk.domain.indicators import CalcStatus
+from stock_risk.domain.lifecycle.params import FIXED
 from stock_risk.domain.market_data import DailyBar
 from stock_risk.domain.numeric import InvalidInputError
 
-G = 3  # v0.7 第 4.2 节固定值
+G = FIXED.g  # v0.7 第 4.2 节固定值
 D0 = date(2019, 3, 4)  # 周一
 DAYS = [D0 + timedelta(days=i) for i in range(5)]  # r−2, r−1, r0, r1, r2（周一至周五）
 CAL = TradingCalendar.from_days(DAYS)
@@ -44,7 +45,7 @@ def test_S19b_previous_trading_day_missing() -> None:
     src = table({RM1: TableRow(100, 100, atr=2), R1: TableRow(93, 97, atr=2)})
     r = compute_r2(src, R1, 20, G)
     assert (r.status, r.gap_score, r.triggered) == (CalcStatus.MISSING_DATA, None, False)
-    assert src.window_max_close(R1, 63, None) == (100.0, RM1)  # D_T 的窗口最高来自 r−1
+    assert src.window_max_close(R1, FIXED.w, None) == (100.0, RM1)  # D_T 的窗口最高来自 r−1
 
 
 def test_S19c_gap_exactly_minus_g_triggers() -> None:
@@ -108,7 +109,7 @@ def test_computed_matches_definitions_and_skips_missing_day() -> None:
     assert src.atr(R1, 2) == (2 + max(101 - 96, abs(101 - 100), abs(96 - 100))) / 2
     assert src.sma(R1, 3) == pytest.approx(99.0)
     assert compute_r2(src, R1, 1, G).status is CalcStatus.MISSING_DATA
-    assert src.window_max_close(R1, 63, None) == (100.0, RM1)
+    assert src.window_max_close(R1, FIXED.w, None) == (100.0, RM1)
 
 
 def test_computed_r2_ok_path() -> None:

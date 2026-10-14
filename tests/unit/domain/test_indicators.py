@@ -5,10 +5,11 @@ from datetime import date, timedelta
 import pytest
 
 from stock_risk.domain import indicators as ind
+from stock_risk.domain.lifecycle.params import FIXED
 from stock_risk.domain.market_data import DailyBar
 from stock_risk.domain.numeric import InvalidInputError
 
-W = 63  # v0.7 第 4.2 节固定值
+W = FIXED.w  # v0.7 第 4.2 节固定值
 
 
 def f_bars(after_peak: list[float]) -> list[DailyBar]:
