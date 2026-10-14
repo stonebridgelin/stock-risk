@@ -1,6 +1,8 @@
 """读取 data/raw 中的原始行情（实现 application.ports.RawDataReader）。
 
-封存纪律：晚于探索期截止日的行只计数，不解析数值、不返回。
+两种读法：
+- load：审计用。晚于探索期截止日的行只计数，不解析数值、不返回；数值按 float 解析，不量化。
+- load_text：统一取数入口用（I12）。只解析日期，数值保持文本，封存检查与量化由入口完成。
 """
 
 from __future__ import annotations
@@ -10,9 +12,10 @@ import hashlib
 from datetime import date
 from pathlib import Path
 
-from stock_risk.application.ports import RawFile
+from stock_risk.application.ports import RawFile, RawTextFile
 from stock_risk.domain.audit import count_sealed_rows
 from stock_risk.domain.market_data import ActionType, CorporateAction, DailyBar, PriceHistory
+from stock_risk.domain.raw_text import RawActionText, RawBarText
 from stock_risk.domain.seal import EXPLORATION_END
 
 MANIFEST_FILE = "MANIFEST.sha256"
@@ -67,6 +70,34 @@ class CsvRawDataReader:
             history=PriceHistory(tuple(bars), tuple(actions)),
             sealed_rows=count_sealed_rows(sealed_days),
         )
+
+    def load_text(self, symbol: str) -> RawTextFile:
+        bars: list[RawBarText] = []
+        with (self._root / f"{symbol}.csv").open(encoding="utf-8", newline="") as f:
+            for r in csv.DictReader(f):
+                bars.append(
+                    RawBarText(
+                        day=date.fromisoformat(r["date"]),
+                        open=r["open"],
+                        high=r["high"],
+                        low=r["low"],
+                        close=r["close"],
+                        volume=r["volume"],
+                        adj_open=r["adj_open"],
+                        adj_high=r["adj_high"],
+                        adj_low=r["adj_low"],
+                        adj_close=r["adj_close"],
+                    )
+                )
+        actions: list[RawActionText] = []
+        action_path = self._root / f"{symbol}.actions.csv"
+        if action_path.exists():
+            with action_path.open(encoding="utf-8", newline="") as f:
+                actions = [
+                    RawActionText(date.fromisoformat(r["date"]), r["type"], r["value"])
+                    for r in csv.DictReader(f)
+                ]
+        return RawTextFile(symbol, tuple(bars), tuple(actions))
 
     def manifest_sha256(self) -> str | None:
         p = self._root / MANIFEST_FILE

@@ -56,6 +56,14 @@ class Settings:
     def audit_output_dir(self) -> Path:
         return self.project_root / "output" / "audit"
 
+    @property
+    def calendar_check_output_dir(self) -> Path:
+        return self.project_root / "output" / "calendar_check"
+
+    @property
+    def ranges_output_dir(self) -> Path:
+        return self.project_root / "output" / "ranges"
+
 
 def load_settings(project_root: Path = PROJECT_ROOT) -> Settings:
     file_values = _parse_env_file(project_root / ".env")

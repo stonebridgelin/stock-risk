@@ -1,6 +1,7 @@
 """从 CSV 读取研究样本（实现 application.ports.UniverseProvider）。
 
-格式：symbol,source_candidates,category,note
+格式：symbol,source_candidates,category,role,note
+role 只允许 signal_target / reference_only（I15），缺失或其他值报错。
 source_candidates 用 | 分隔，按顺序尝试。以 # 开头的行为注释。
 """
 
@@ -9,7 +10,17 @@ from __future__ import annotations
 import csv
 from pathlib import Path
 
-from stock_risk.domain.universe import UniverseMember
+from stock_risk.domain.universe import Role, UniverseMember
+
+
+def _role(row: dict[str, str]) -> Role:
+    text = (row.get("role") or "").strip()
+    try:
+        return Role(text)
+    except ValueError as e:
+        raise ValueError(
+            f"{row.get('symbol')}: role 只允许 {[r.value for r in Role]}，实际为 {text!r}"
+        ) from e
 
 
 class CsvUniverseProvider:
@@ -26,6 +37,7 @@ class CsvUniverseProvider:
                     c.strip().upper() for c in r["source_candidates"].split("|") if c.strip()
                 ),
                 category=r["category"].strip(),
+                role=_role(r),
                 note=(r.get("note") or "").strip(),
             )
             for r in csv.DictReader(lines)

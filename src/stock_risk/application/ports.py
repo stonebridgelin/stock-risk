@@ -13,6 +13,7 @@ from stock_risk.application.models import FetchOutcome, FetchReport
 from stock_risk.domain.corrections import PriceCorrection
 from stock_risk.domain.listing import ListingPeriod
 from stock_risk.domain.market_data import PriceHistory
+from stock_risk.domain.raw_text import RawActionText, RawBarText
 from stock_risk.domain.segments import SymbolSegment
 from stock_risk.domain.universe import UniverseMember
 
@@ -74,10 +75,25 @@ class RawFile:
     sealed_rows: int
 
 
+@dataclass(frozen=True, slots=True)
+class RawTextFile:
+    """统一取数入口读到的文本行：日期已解析，数值保持文本（I12）。"""
+
+    symbol: str
+    bars: tuple[RawBarText, ...]
+    actions: tuple[RawActionText, ...]
+
+
 class RawDataReader(Protocol):
     def exists(self, symbol: str) -> bool: ...
 
-    def load(self, symbol: str) -> RawFile: ...
+    def load(self, symbol: str) -> RawFile:
+        """审计用：越界行只计数，不报错。"""
+        ...
+
+    def load_text(self, symbol: str) -> RawTextFile:
+        """统一取数入口用：全部行原样返回（含越界行，由入口报错）。"""
+        ...
 
     def manifest_sha256(self) -> str | None:
         """MANIFEST.sha256 文件本身的 SHA-256，作为数据版本标识；没有清单时为 None。"""

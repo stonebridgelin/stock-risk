@@ -7,7 +7,7 @@ import pytest
 from stock_risk.application.fetch_raw_data import FetchRawDataService
 from stock_risk.domain.market_data import DailyBar, PriceHistory
 from stock_risk.domain.segments import SymbolSegment
-from stock_risk.domain.universe import UniverseMember
+from stock_risk.domain.universe import Role, UniverseMember
 from stock_risk.infrastructure.storage.csv_raw_repository import CsvRawDataRepository
 
 
@@ -47,7 +47,10 @@ SEGS = {
         SymbolSegment("VRX", "BHC", date(2018, 7, 16), None),
     )
 }
-MEMBERS = [UniverseMember("VRX", ("VRX", "BHC"), "event"), UniverseMember("AAPL", ("AAPL",), "x")]
+MEMBERS = [
+    UniverseMember("VRX", ("VRX", "BHC"), "event", Role.SIGNAL_TARGET),
+    UniverseMember("AAPL", ("AAPL",), "x", Role.SIGNAL_TARGET),
+]
 
 
 def make(tmp_path: Path, days: dict[str, list[date]], segs=SEGS):

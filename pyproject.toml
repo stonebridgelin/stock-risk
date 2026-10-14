@@ -13,6 +13,7 @@ dev = [
     "pytest>=8",
     "import-linter>=2",
     "ruff>=0.6",
+    "exchange-calendars==4.13.2",  # 交易日历独立核对（I13），只用于 check-calendar
 ]
 
 [build-system]

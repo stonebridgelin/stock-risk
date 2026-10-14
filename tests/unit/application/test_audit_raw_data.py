@@ -7,7 +7,7 @@ from stock_risk.domain.corrections import CorrectionMethod, PriceCorrection
 from stock_risk.domain.listing import ListingPeriod
 from stock_risk.domain.market_data import DailyBar, PriceHistory
 from stock_risk.domain.segments import SymbolSegment
-from stock_risk.domain.universe import UniverseMember
+from stock_risk.domain.universe import Role, UniverseMember
 from stock_risk.infrastructure.storage.audit_report_writer import AuditReportFileWriter
 from stock_risk.infrastructure.storage.csv_raw_reader import CsvRawDataReader
 from stock_risk.infrastructure.storage.csv_raw_repository import BAR_COLUMNS
@@ -56,7 +56,9 @@ def test_audit_end_to_end(tmp_path: Path) -> None:
         raw, "SHLD", [row(CAL[0]), f"{CAL[1]},10,11,9,12,100,10,11,9,10", row(CAL[2]), row(CAL[4])]
     )
     (raw / "MANIFEST.sha256").write_text("abc  SPY.csv\n", "utf-8")
-    members = [UniverseMember(s, (s,), "x") for s in ("SPY", "VRX", "SHLD", "GONE")]
+    members = [
+        UniverseMember(s, (s,), "x", Role.SIGNAL_TARGET) for s in ("SPY", "VRX", "SHLD", "GONE")
+    ]
     segs = {
         "VRX": (
             SymbolSegment("VRX", "VRX", None, CAL[3]),

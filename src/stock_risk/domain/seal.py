@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from datetime import date
 
 from stock_risk.domain.market_data import PriceHistory
@@ -25,6 +26,13 @@ def truncate_to_exploration(history: PriceHistory) -> PriceHistory:
         bars=tuple(b for b in history.bars if b.day <= EXPLORATION_END),
         actions=tuple(a for a in history.actions if a.day <= EXPLORATION_END),
     )
+
+
+def assert_no_sealed_days(days: Iterable[date], what: str) -> None:
+    """统一取数入口第一步（I12）：只看日期，出现验证期日期立即报错，不先过滤。"""
+    for d in days:
+        if d > EXPLORATION_END:
+            raise SealViolation(f"{what} 中出现晚于 {EXPLORATION_END} 的行")
 
 
 def assert_sealed(history: PriceHistory) -> None:

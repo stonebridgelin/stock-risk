@@ -1,44 +1,45 @@
 # 探索期研究样本（41 个）。symbol = 当时的代码；source_candidates = 数据源依次尝试的代码
 # 修改本文件需同步 docs/develop_docs/02-数据获取.md
-symbol,source_candidates,category,note
-SPY,SPY,etf,大盘
-QQQ,QQQ,etf,大盘
-SMH,SMH,etf,半导体
-XLK,XLK,etf,行业
-XLF,XLF,etf,行业
-XLE,XLE,etf,行业
-XLV,XLV,etf,行业
-XLI,XLI,etf,行业
-XLY,XLY,etf,行业
-XLP,XLP,etf,行业
-XLU,XLU,etf,行业
-XLB,XLB,etf,行业
-XLRE,XLRE,etf,2015 年上市
-XLC,XLC,etf,2018 年上市
-JNJ,JNJ,low_vol,
-PG,PG,low_vol,
-KO,KO,low_vol,
-XOM,XOM,low_vol,
-AAPL,AAPL,large_drawdown,2012-13 回撤
-MSFT,MSFT,large_drawdown,
-BA,BA,large_drawdown,2019 MAX
-AMZN,AMZN,large_drawdown,
-TSLA,TSLA,high_vol,2010 年上市
-NFLX,NFLX,high_vol,2011 暴跌
-NVDA,NVDA,high_vol,2018 暴跌
-AMD,AMD,high_vol,
-MU,MU,high_vol,
-CMG,CMG,event,2015 食品安全
-BP,BP,event,2010 漏油；ADR
-VRX,VRX|BHC,event,2015 暴跌；后改名 BHC
-GE,GE,event,2017-18 阴跌
-FCX,FCX,cyclical,
-CHK,CHK|CHKAQ,cyclical,
-WFT,WFT|WFTIQ,cyclical,2019 破产
-BBBY,BBBY|BBBYQ,delisted,
-SHLD,SHLD|SHLDQ,delisted,2018 破产
-GMCR,GMCR,delisted,2016 被收购
-FB,FB|META,ipo,2012 年上市；后改名 META
-TWTR,TWTR,ipo,2013 年上市；2022 退市
-TM,TM,adr,
-SONY,SONY|SNE,adr,
+# role：signal_target（个股，运行生命周期）/ reference_only（ETF，只作背景），I15
+symbol,source_candidates,category,role,note
+SPY,SPY,etf,reference_only,大盘
+QQQ,QQQ,etf,reference_only,大盘
+SMH,SMH,etf,reference_only,半导体
+XLK,XLK,etf,reference_only,行业
+XLF,XLF,etf,reference_only,行业
+XLE,XLE,etf,reference_only,行业
+XLV,XLV,etf,reference_only,行业
+XLI,XLI,etf,reference_only,行业
+XLY,XLY,etf,reference_only,行业
+XLP,XLP,etf,reference_only,行业
+XLU,XLU,etf,reference_only,行业
+XLB,XLB,etf,reference_only,行业
+XLRE,XLRE,etf,reference_only,2015 年上市
+XLC,XLC,etf,reference_only,2018 年上市
+JNJ,JNJ,low_vol,signal_target,
+PG,PG,low_vol,signal_target,
+KO,KO,low_vol,signal_target,
+XOM,XOM,low_vol,signal_target,
+AAPL,AAPL,large_drawdown,signal_target,2012-13 回撤
+MSFT,MSFT,large_drawdown,signal_target,
+BA,BA,large_drawdown,signal_target,2019 MAX
+AMZN,AMZN,large_drawdown,signal_target,
+TSLA,TSLA,high_vol,signal_target,2010 年上市
+NFLX,NFLX,high_vol,signal_target,2011 暴跌
+NVDA,NVDA,high_vol,signal_target,2018 暴跌
+AMD,AMD,high_vol,signal_target,
+MU,MU,high_vol,signal_target,
+CMG,CMG,event,signal_target,2015 食品安全
+BP,BP,event,signal_target,2010 漏油；ADR
+VRX,VRX|BHC,event,signal_target,2015 暴跌；后改名 BHC
+GE,GE,event,signal_target,2017-18 阴跌
+FCX,FCX,cyclical,signal_target,
+CHK,CHK|CHKAQ,cyclical,signal_target,
+WFT,WFT|WFTIQ,cyclical,signal_target,2019 破产
+BBBY,BBBY|BBBYQ,delisted,signal_target,
+SHLD,SHLD|SHLDQ,delisted,signal_target,2018 破产
+GMCR,GMCR,delisted,signal_target,2016 被收购
+FB,FB|META,ipo,signal_target,2012 年上市；后改名 META
+TWTR,TWTR,ipo,signal_target,2013 年上市；2022 退市
+TM,TM,adr,signal_target,
+SONY,SONY|SNE,adr,signal_target,

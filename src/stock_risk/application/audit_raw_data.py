@@ -10,7 +10,11 @@ from datetime import date
 from pathlib import Path
 
 from stock_risk.application.audit_models import AuditReport, SymbolAudit
-from stock_risk.application.market_data_loader import LoadedHistory, MarketDataLoader
+from stock_risk.application.market_data_loader import (
+    CALENDAR_SYMBOL,
+    LoadedHistory,
+    MarketDataLoader,
+)
 from stock_risk.application.ports import (
     AuditReportWriter,
     SegmentProvider,
@@ -25,9 +29,6 @@ from stock_risk.domain.audit import (
     zero_volume_days,
 )
 from stock_risk.domain.segments import SymbolSegment, junction_checks
-
-# I1：以 SPY 的交易日作为 NYSE 交易日历的代理
-CALENDAR_SYMBOL = "SPY"
 
 
 def audit_symbol(
@@ -107,7 +108,7 @@ class AuditRawDataService:
                 continue
             report.symbols.append(
                 audit_symbol(
-                    self._loader.load(member.symbol), calendar, segment_map.get(member.symbol)
+                    self._loader.audit_view(member.symbol), calendar, segment_map.get(member.symbol)
                 )
             )
         paths = self._writer.write(report, out_root / run_date.isoformat())

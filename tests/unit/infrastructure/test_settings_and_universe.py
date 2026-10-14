@@ -24,6 +24,27 @@ def test_exploration_universe_file_is_valid() -> None:
 
 def test_universe_rejects_duplicates(tmp_path: Path) -> None:
     p = tmp_path / "u.csv"
-    p.write_text("symbol,source_candidates,category,note\nA,A,x,\nA,A,x,\n", "utf-8")
+    p.write_text(
+        "symbol,source_candidates,category,role,note\nA,A,x,signal_target,\nA,A,x,signal_target,\n",
+        "utf-8",
+    )
+    with pytest.raises(ValueError):
+        CsvUniverseProvider(p).load()
+
+
+def test_universe_roles_are_14_reference_and_27_signal() -> None:
+    from stock_risk.domain.universe import Role
+
+    members = CsvUniverseProvider(PROJECT_ROOT / "config" / "universe_exploration.csv").load()
+    roles = {m.symbol: m.role for m in members}
+    reference = {s for s, r in roles.items() if r is Role.REFERENCE_ONLY}
+    assert len(reference) == 14 and sum(r is Role.SIGNAL_TARGET for r in roles.values()) == 27
+    assert reference == {m.symbol for m in members if m.category == "etf"}
+
+
+@pytest.mark.parametrize("role", ["", "etf", "SIGNAL_TARGET"])
+def test_universe_rejects_bad_role(tmp_path: Path, role: str) -> None:
+    p = tmp_path / "u.csv"
+    p.write_text(f"symbol,source_candidates,category,role,note\nA,A,x,{role},\n", "utf-8")
     with pytest.raises(ValueError):
         CsvUniverseProvider(p).load()

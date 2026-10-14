@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 from stock_risk.application.audit_raw_data import AuditRawDataService
+from stock_risk.application.check_calendar import CheckCalendarService
 from stock_risk.application.fetch_raw_data import FetchRawDataService
 from stock_risk.application.market_data_loader import MarketDataLoader
+from stock_risk.application.show_ranges import ShowRangesService
 from stock_risk.config.settings import Settings
+from stock_risk.infrastructure.calendars.xnys import ExchangeCalendarsXnys
 from stock_risk.infrastructure.storage.audit_report_writer import AuditReportFileWriter
 from stock_risk.infrastructure.storage.csv_config_providers import (
     CsvListingPeriodProvider,
@@ -15,6 +18,10 @@ from stock_risk.infrastructure.storage.csv_config_providers import (
 from stock_risk.infrastructure.storage.csv_raw_reader import CsvRawDataReader
 from stock_risk.infrastructure.storage.csv_raw_repository import CsvRawDataRepository
 from stock_risk.infrastructure.storage.csv_universe_provider import CsvUniverseProvider
+from stock_risk.infrastructure.storage.ranges_calendar_writers import (
+    CalendarCheckFileWriter,
+    RangesFileWriter,
+)
 from stock_risk.infrastructure.tiingo.client import TiingoPriceSource
 
 
@@ -44,4 +51,20 @@ def build_market_data_loader(settings: Settings) -> MarketDataLoader:
         reader=CsvRawDataReader(settings.raw_data_dir),
         listings=CsvListingPeriodProvider(settings.listing_periods_file),
         corrections=CsvPriceCorrectionProvider(settings.price_corrections_file),
+    )
+
+
+def build_check_calendar_service(settings: Settings) -> CheckCalendarService:
+    return CheckCalendarService(
+        loader=build_market_data_loader(settings),
+        reference=ExchangeCalendarsXnys(),
+        writer=CalendarCheckFileWriter(),
+    )
+
+
+def build_show_ranges_service(settings: Settings) -> ShowRangesService:
+    return ShowRangesService(
+        loader=build_market_data_loader(settings),
+        universe=CsvUniverseProvider(settings.exploration_universe_file),
+        writer=RangesFileWriter(),
     )

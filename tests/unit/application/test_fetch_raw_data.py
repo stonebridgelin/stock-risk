@@ -6,7 +6,7 @@ import pytest
 from stock_risk.application.fetch_raw_data import FetchRawDataService
 from stock_risk.application.ports import PriceSourceError
 from stock_risk.domain.market_data import DailyBar, PriceHistory
-from stock_risk.domain.universe import UniverseMember
+from stock_risk.domain.universe import Role, UniverseMember
 from stock_risk.infrastructure.storage.csv_raw_repository import CsvRawDataRepository
 
 
@@ -38,10 +38,10 @@ class FakeUniverse:
 
 
 UNIVERSE = [
-    UniverseMember("AAPL", ("AAPL",), "large_drawdown"),
-    UniverseMember("FB", ("FB", "META"), "ipo"),
-    UniverseMember("SHLD", ("SHLD",), "delisted"),
-    UniverseMember("BAD", ("BAD",), "x"),
+    UniverseMember("AAPL", ("AAPL",), "large_drawdown", Role.SIGNAL_TARGET),
+    UniverseMember("FB", ("FB", "META"), "ipo", Role.SIGNAL_TARGET),
+    UniverseMember("SHLD", ("SHLD",), "delisted", Role.SIGNAL_TARGET),
+    UniverseMember("BAD", ("BAD",), "x", Role.SIGNAL_TARGET),
 ]
 
 
