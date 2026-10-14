@@ -4,12 +4,13 @@
 - 复权系数跳变：adj_close / close 相对前一日变化超过阈值，且当天没有公司行动记录。
 - 交易日缺口：日历上、检查区间内没有日线的交易日。
 - 零成交量、封存越界行数。
+- MANIFEST 校验：按清单逐个比较日线文件的 SHA-256（T00a）。
 """
 
 from __future__ import annotations
 
 import math
-from collections.abc import Collection, Iterable, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
 from enum import StrEnum
@@ -135,6 +136,36 @@ def calendar_gaps(
 
 def zero_volume_days(bars: Iterable[DailyBar]) -> list[date]:
     return [b.day for b in bars if b.volume == 0]
+
+
+class ManifestStatus(StrEnum):
+    HASH_MISMATCH = "hash_mismatch"  # 文件哈希与清单不一致
+    FILE_MISSING = "file_missing"  # 清单中有、目录中没有
+    NOT_IN_MANIFEST = "not_in_manifest"  # 目录中有、清单中没有
+
+
+@dataclass(frozen=True, slots=True)
+class ManifestMismatch:
+    file: str
+    status: ManifestStatus
+    expected: str | None
+    actual: str | None
+
+
+def manifest_mismatches(
+    expected: Mapping[str, str], actual: Mapping[str, str]
+) -> list[ManifestMismatch]:
+    """按 MANIFEST 逐个比较日线文件的 SHA-256。expected / actual：文件名 → 哈希。"""
+    out: list[ManifestMismatch] = []
+    for name in sorted(set(expected) | set(actual)):
+        e, a = expected.get(name), actual.get(name)
+        if e is None:
+            out.append(ManifestMismatch(name, ManifestStatus.NOT_IN_MANIFEST, None, a))
+        elif a is None:
+            out.append(ManifestMismatch(name, ManifestStatus.FILE_MISSING, e, None))
+        elif e.lower() != a.lower():
+            out.append(ManifestMismatch(name, ManifestStatus.HASH_MISMATCH, e, a))
+    return out
 
 
 def count_sealed_rows(days: Iterable[date]) -> int:

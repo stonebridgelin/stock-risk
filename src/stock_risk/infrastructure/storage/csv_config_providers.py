@@ -4,6 +4,8 @@ config/symbol_segments.csv：symbol,source_ticker,from,to,note
     同一 symbol 的各行按文件顺序组成分段；from / to 为空表示该端不设边界。
 config/listing_periods.csv：symbol,listed_from,listed_until,venue,source_url,verified_on,note
     只登记需要截断的代码；日期为空表示该端不设边界（找不到可靠来源时也留空，并在 note 说明）。
+config/price_corrections.csv：symbol,from,to,method,ruling,evidence
+    复权价更正（I11）；from / to 必填，method 目前只有 use_raw，未知方法报错。
 以 # 开头的行为注释。文件不存在视为没有配置。
 """
 
@@ -13,6 +15,7 @@ import csv
 from datetime import date
 from pathlib import Path
 
+from stock_risk.domain.corrections import CorrectionError, PriceCorrection, parse_method
 from stock_risk.domain.listing import ListingPeriod
 from stock_risk.domain.segments import SymbolSegment, validate_segments
 
@@ -45,6 +48,28 @@ class CsvSegmentProvider:
             )
             grouped.setdefault(seg.symbol, []).append(seg)
         return {s: validate_segments(segs) for s, segs in grouped.items()}
+
+
+class CsvPriceCorrectionProvider:
+    def __init__(self, path: Path) -> None:
+        self._path = path
+
+    def load(self) -> dict[str, tuple[PriceCorrection, ...]]:
+        grouped: dict[str, list[PriceCorrection]] = {}
+        for r in _rows(self._path):
+            start, end = _day(r["from"]), _day(r["to"])
+            if start is None or end is None:
+                raise CorrectionError(f"{r['symbol']}: 更正的 from / to 不能为空")
+            c = PriceCorrection(
+                symbol=r["symbol"].upper(),
+                start=start,
+                end=end,
+                method=parse_method(r["method"]),
+                ruling=r.get("ruling", ""),
+                evidence=r.get("evidence", ""),
+            )
+            grouped.setdefault(c.symbol, []).append(c)
+        return {s: tuple(cs) for s, cs in grouped.items()}
 
 
 class CsvListingPeriodProvider:

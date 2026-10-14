@@ -49,6 +49,10 @@ class Settings:
         return self.project_root / "config" / "listing_periods.csv"
 
     @property
+    def price_corrections_file(self) -> Path:
+        return self.project_root / "config" / "price_corrections.csv"
+
+    @property
     def audit_output_dir(self) -> Path:
         return self.project_root / "output" / "audit"
 

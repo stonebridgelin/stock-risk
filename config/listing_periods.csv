@@ -1,7 +1,9 @@
 # 上市期间（T00 / D2、D3）。只登记需要截断的代码；日期必须有可查证的来源链接
 # 找不到可靠来源时日期留空、在 note 说明，并作为停止项上报；修改本文件需同步 docs/develop_docs/02-数据获取.md
-# listed_until = 在交易所的最后交易日（停牌前一交易日），不是 Form 25 摘牌生效日；口径待产品经理确认（T00 回执停止项）
+# listed_until = 在交易所的最后一个正常交易日（停牌前一交易日），产品经理裁定 PM-01；不用 Form 25 摘牌生效日
+# listed_from = 新历史段的起点（I10）：指标从这一天重新积累
 symbol,listed_from,listed_until,venue,source_url,verified_on,note
 SHLD,,2018-10-23,Nasdaq,https://www.sec.gov/Archives/edgar/data/1310067/000119312518299298/d622556d8k.htm,2026-10-13,"8-K：Nasdaq 于 2018-10-24 开盘时停牌，同日起在 OTC Pink 以 SHLDQ 交易；2018-10-23 为停牌前一交易日（推算）。Form 25-NSE 摘牌 2018-11-26 开盘生效：https://www.sec.gov/Archives/edgar/data/0001310067/000135445718000476/shlddelistreason.txt"
 WFT,,2019-05-10,NYSE,https://www.sec.gov/Archives/edgar/data/1603923/000160392319000067/a8-kdelistingnotice.htm,2026-10-13,"8-K：NYSE 于 2019-05-13 开盘前停牌，2019-05-14 起场外以 WFTIF 交易（2019-07 破产后为 WFTIQ）；2019-05-10 为停牌前一交易日（推算）。Form 25-NSE 预定 2020-04-28 摘牌：https://www.sec.gov/Archives/edgar/data/1603923/000087666120000340/ruleprovisionnotice.htm"
-SMH,2011-12-21,,NYSE Arca,https://www.sec.gov/Archives/edgar/data/1110511/000093041311008012/c67045_ex-a5m.htm,2026-10-13,"Van Eck 2011-12-20 新闻稿：Market Vectors Semiconductor ETF 预计 2011-12-21 开始交易（原文 expected）。此前的 SMH 为 Semiconductor HOLDRS Trust，2011-12-20 终止并于当日收盘后停牌：https://www.sec.gov/Archives/edgar/data/1110511/000094787111001045/ss133854_8k-semi.htm"
+SMH,2011-12-21,,NYSE Arca,https://www.sec.gov/Archives/edgar/data/1110511/000093041311008012/c67045_ex-a5m.htm,2026-10-13,"Van Eck 2011-12-20 新闻稿：Market Vectors Semiconductor ETF 预计 2011-12-21 开始交易（原文 expected）。此前的 SMH 为 Semiconductor HOLDRS Trust，2011-12-20 终止并于当日收盘后停牌：https://www.sec.gov/Archives/edgar/data/1110511/000094787111001045/ss133854_8k-semi.htm。依据等级：公告 + 数据旁证（PM-02）"
+GMCR,,2016-03-02,Nasdaq,https://www.sec.gov/Archives/edgar/data/909954/000110465916102088/a16-5728_18k.htm,2026-10-13,"8-K：2016-03-03 被 JAB 牵头的投资方收购完成（每股 92.00 美元现金），Nasdaq 于 2016-03-03 约 9:00 a.m. 暂停交易；2016-03-02 为停牌前一交易日（按 PM-01 口径），与数据一致（03-02 为最后一个有成交的交易日）。Form 25-NSE 于 2016-03-03 提交：https://www.sec.gov/Archives/edgar/data/909954/000135445716000317/primary_doc.xml"

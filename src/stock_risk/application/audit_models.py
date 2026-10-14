@@ -5,7 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date
 
-from stock_risk.domain.audit import AdjFactorJump, ExplicitFailure
+from stock_risk.domain.audit import AdjFactorJump, ExplicitFailure, ManifestMismatch
+from stock_risk.domain.corrections import PriceCorrection
 from stock_risk.domain.listing import ListingPeriod
 from stock_risk.domain.segments import JunctionCheck
 
@@ -26,6 +27,8 @@ class SymbolAudit:
     gaps: tuple[date, ...]
     zero_volume: tuple[date, ...]
     junctions: tuple[JunctionCheck, ...]
+    corrections: tuple[PriceCorrection, ...] = ()  # 已登记的复权价更正（I11）
+    corrected_factor_jumps: tuple[AdjFactorJump, ...] = ()  # 更正后数据的系数跳变
 
 
 @dataclass(slots=True)
@@ -38,6 +41,8 @@ class AuditReport:
     adj_factor_threshold: float
     symbols: list[SymbolAudit] = field(default_factory=list)
     missing: list[str] = field(default_factory=list)  # 研究样本中有、data/raw 中没有的代码
+    manifest_entries: int = 0
+    manifest_mismatches: list[ManifestMismatch] = field(default_factory=list)
 
     @property
     def total_failures(self) -> int:

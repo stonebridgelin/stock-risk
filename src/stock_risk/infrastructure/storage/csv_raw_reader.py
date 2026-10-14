@@ -16,6 +16,7 @@ from stock_risk.domain.market_data import ActionType, CorporateAction, DailyBar,
 from stock_risk.domain.seal import EXPLORATION_END
 
 MANIFEST_FILE = "MANIFEST.sha256"
+MERGED_ACTIONS_FILE = "corporate_actions.csv"
 
 
 class CsvRawDataReader:
@@ -70,3 +71,26 @@ class CsvRawDataReader:
     def manifest_sha256(self) -> str | None:
         p = self._root / MANIFEST_FILE
         return hashlib.sha256(p.read_bytes()).hexdigest() if p.exists() else None
+
+    def manifest_entries(self) -> dict[str, str]:
+        """MANIFEST.sha256 中的条目（文件名 → 哈希）；格式为每行“<哈希>  <文件名>”。"""
+        p = self._root / MANIFEST_FILE
+        if not p.exists():
+            return {}
+        out: dict[str, str] = {}
+        for line in p.read_text("utf-8").splitlines():
+            if not line.strip():
+                continue
+            digest, _, name = line.strip().partition("  ")
+            if not name:
+                raise ValueError(f"{MANIFEST_FILE} 行格式不正确: {line!r}")
+            out[name.strip()] = digest.strip()
+        return out
+
+    def daily_file_hashes(self) -> dict[str, str]:
+        """目录中各日线文件（<SYMBOL>.csv，不含公司行动文件）的 SHA-256。"""
+        return {
+            p.name: hashlib.sha256(p.read_bytes()).hexdigest()
+            for p in sorted(self._root.glob("*.csv"))
+            if not p.name.endswith(".actions.csv") and p.name != MERGED_ACTIONS_FILE
+        }

@@ -97,3 +97,28 @@ def test_calendar_gaps_empty_bars() -> None:
 def test_zero_volume_and_sealed_count() -> None:
     assert zero_volume_days([bar(0, v=0.0), bar(1)]) == [day(0)]
     assert count_sealed_rows([date(2019, 12, 31), date(2020, 1, 2), date(2020, 1, 3)]) == 2
+
+
+def test_manifest_mismatches() -> None:
+    from stock_risk.domain.audit import ManifestStatus, manifest_mismatches
+
+    expected = {"A.csv": "aa", "B.csv": "bb", "C.csv": "cc"}
+    actual = {"A.csv": "AA", "B.csv": "xx", "D.csv": "dd"}
+    out = {m.file: m.status for m in manifest_mismatches(expected, actual)}
+    assert out == {
+        "B.csv": ManifestStatus.HASH_MISMATCH,
+        "C.csv": ManifestStatus.FILE_MISSING,
+        "D.csv": ManifestStatus.NOT_IN_MANIFEST,
+    }
+
+
+def test_corrected_shld_type_jump_disappears() -> None:
+    # T00a 验收：更正后对复权系数跳变的检查不再出现 2018-03-28 型跳变
+    from stock_risk.domain.corrections import CorrectionMethod, PriceCorrection, apply_corrections
+    from stock_risk.domain.market_data import PriceHistory
+
+    bars = (bar(0), bar(1), bar(2, factor=0.823), bar(3, factor=0.823))
+    assert [j.day for j in adj_factor_jumps(bars, set())] == [day(2)]
+    c = PriceCorrection("SHLD", day(2), day(3), CorrectionMethod.USE_RAW, "PM-03", "依据")
+    corrected = apply_corrections(PriceHistory(bars, ()), [c])
+    assert adj_factor_jumps(corrected.bars, set()) == []

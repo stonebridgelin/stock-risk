@@ -2,6 +2,8 @@ from datetime import date
 from pathlib import Path
 
 from stock_risk.application.audit_raw_data import AuditRawDataService
+from stock_risk.application.market_data_loader import MarketDataLoader
+from stock_risk.domain.corrections import CorrectionMethod, PriceCorrection
 from stock_risk.domain.listing import ListingPeriod
 from stock_risk.domain.market_data import DailyBar, PriceHistory
 from stock_risk.domain.segments import SymbolSegment
@@ -63,13 +65,11 @@ def test_audit_end_to_end(tmp_path: Path) -> None:
     }
     listings = {"SHLD": ListingPeriod("SHLD", listed_until=CAL[2], source_url="https://x")}
 
-    svc = AuditRawDataService(
-        CsvRawDataReader(raw),
-        Fixed(members),
-        Fixed(segs),
-        Fixed(listings),
-        AuditReportFileWriter(),
-    )
+    corrections = {
+        "VRX": (PriceCorrection("VRX", CAL[5], CAL[5], CorrectionMethod.USE_RAW, "PM-T", "测试"),)
+    }
+    loader = MarketDataLoader(CsvRawDataReader(raw), Fixed(listings), Fixed(corrections))
+    svc = AuditRawDataService(loader, Fixed(members), Fixed(segs), AuditReportFileWriter())
     report, paths = svc.run(date(2026, 10, 13), tmp_path / "audit")
 
     by = {s.symbol: s for s in report.symbols}
@@ -82,11 +82,25 @@ def test_audit_end_to_end(tmp_path: Path) -> None:
     assert by["SHLD"].gaps == () and by["SHLD"].rows_outside_listing == 1
     assert [f.kind.value for f in by["SHLD"].failures] == ["close_outside_range"]
     assert report.total_sealed_rows == 0
+    # 更正：原始数据仍报告跳变，更正后不再出现
+    assert by["VRX"].corrections == corrections["VRX"]
+    assert by["VRX"].corrected_factor_jumps == ()
+    assert by["SHLD"].corrections == () and by["SHLD"].corrected_factor_jumps == ()
+    # MANIFEST：SPY 哈希不符，VRX、SHLD 不在清单中
+    statuses = {m.file: m.status.value for m in report.manifest_mismatches}
+    assert statuses == {
+        "SPY.csv": "hash_mismatch",
+        "VRX.csv": "not_in_manifest",
+        "SHLD.csv": "not_in_manifest",
+    }
 
     out = tmp_path / "audit" / "2026-10-13"
     assert {p.name for p in paths} >= {"summary.md", "explicit_failures.csv", "junctions.csv"}
     summary = (out / "summary.md").read_text("utf-8")
     assert "VRX → BHC" in summary and "缺少原始文件 1 个：GONE" in summary
+    assert "## 已登记的更正" in summary and "PM-T" in summary and "- VRX：无" in summary
+    assert "## MANIFEST 校验" in summary and "hash_mismatch" in summary
+    assert (out / "manifest_check.csv").exists() and (out / "price_corrections.csv").exists()
 
 
 def test_reader_counts_sealed_rows_without_returning_them(tmp_path: Path) -> None:

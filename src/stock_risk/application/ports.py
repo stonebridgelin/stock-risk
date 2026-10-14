@@ -10,6 +10,7 @@ from typing import Protocol
 
 from stock_risk.application.audit_models import AuditReport
 from stock_risk.application.models import FetchOutcome, FetchReport
+from stock_risk.domain.corrections import PriceCorrection
 from stock_risk.domain.listing import ListingPeriod
 from stock_risk.domain.market_data import PriceHistory
 from stock_risk.domain.segments import SymbolSegment
@@ -40,6 +41,12 @@ class SegmentProvider(Protocol):
 
 class ListingPeriodProvider(Protocol):
     def load(self) -> Mapping[str, ListingPeriod]: ...
+
+
+class PriceCorrectionProvider(Protocol):
+    def load(self) -> Mapping[str, tuple[PriceCorrection, ...]]:
+        """按 symbol 返回已登记的复权价更正（I11）；没有更正的代码不出现在结果中。"""
+        ...
 
 
 class RawDataRepository(Protocol):
@@ -74,6 +81,14 @@ class RawDataReader(Protocol):
 
     def manifest_sha256(self) -> str | None:
         """MANIFEST.sha256 文件本身的 SHA-256，作为数据版本标识；没有清单时为 None。"""
+        ...
+
+    def manifest_entries(self) -> Mapping[str, str]:
+        """清单中的条目：日线文件名 → SHA-256。"""
+        ...
+
+    def daily_file_hashes(self) -> Mapping[str, str]:
+        """目录中实际的日线文件名 → SHA-256。"""
         ...
 
 

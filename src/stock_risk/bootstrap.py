@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from stock_risk.application.audit_raw_data import AuditRawDataService
 from stock_risk.application.fetch_raw_data import FetchRawDataService
+from stock_risk.application.market_data_loader import MarketDataLoader
 from stock_risk.config.settings import Settings
 from stock_risk.infrastructure.storage.audit_report_writer import AuditReportFileWriter
 from stock_risk.infrastructure.storage.csv_config_providers import (
     CsvListingPeriodProvider,
+    CsvPriceCorrectionProvider,
     CsvSegmentProvider,
 )
 from stock_risk.infrastructure.storage.csv_raw_reader import CsvRawDataReader
@@ -29,9 +31,17 @@ def build_fetch_raw_data_service(settings: Settings) -> FetchRawDataService:
 
 def build_audit_raw_data_service(settings: Settings) -> AuditRawDataService:
     return AuditRawDataService(
-        reader=CsvRawDataReader(settings.raw_data_dir),
+        loader=build_market_data_loader(settings),
         universe=CsvUniverseProvider(settings.exploration_universe_file),
         segments=CsvSegmentProvider(settings.symbol_segments_file),
-        listings=CsvListingPeriodProvider(settings.listing_periods_file),
         writer=AuditReportFileWriter(),
+    )
+
+
+def build_market_data_loader(settings: Settings) -> MarketDataLoader:
+    """下游读取原始数据的统一入口：应用已登记的复权价更正（I11）。"""
+    return MarketDataLoader(
+        reader=CsvRawDataReader(settings.raw_data_dir),
+        listings=CsvListingPeriodProvider(settings.listing_periods_file),
+        corrections=CsvPriceCorrectionProvider(settings.price_corrections_file),
     )
