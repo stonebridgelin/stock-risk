@@ -11,7 +11,7 @@
 from __future__ import annotations
 
 import bisect
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
 from typing import Protocol
@@ -131,12 +131,30 @@ class _ClosesBase:
         return max(0, hi - lo)
 
 
-class ComputedIndicators(_ClosesBase):
-    """由日线计算。bars 为一个历史段内的全部有效日线（复权价，已量化与更正）。"""
+_IndexedFn = Callable[[Sequence[DailyBar], int, int], "float | None"]
 
-    def __init__(self, calendar: TradingCalendar, bars: Sequence[DailyBar]) -> None:
+
+class ComputedIndicators(_ClosesBase):
+    """由日线计算。bars 为一个历史段内的全部有效日线（复权价，已量化与更正）。
+
+    cache = True 时记住 ATR、SMA 的计算结果（同一公式、同一输入，结果完全相同），
+    同一历史段可以在多个候选之间共用一个实例。
+    """
+
+    def __init__(
+        self, calendar: TradingCalendar, bars: Sequence[DailyBar], cache: bool = True
+    ) -> None:
         super().__init__(calendar, [b.day for b in bars])
         self._bars = tuple(bars)
+        self._cache: dict[tuple[str, int, int], float | None] | None = {} if cache else None
+
+    def _memo(self, kind: str, i: int, n: int, fn: _IndexedFn) -> float | None:
+        if self._cache is None:
+            return fn(self._bars, i, n)
+        key = (kind, i, n)
+        if key not in self._cache:
+            self._cache[key] = fn(self._bars, i, n)
+        return self._cache[key]
 
     def open(self, day: date) -> float:
         return self._bars[self._i(day)].adj_open
@@ -148,10 +166,10 @@ class ComputedIndicators(_ClosesBase):
         return bisect.bisect_right(self._days, day)
 
     def atr(self, day: date, n: int) -> float | None:
-        return ind.atr(self._bars, self._i(day), n)
+        return self._memo("atr", self._i(day), n, ind.atr)
 
     def sma(self, day: date, m: int) -> float | None:
-        return ind.sma(self._bars, self._i(day), m)
+        return self._memo("sma", self._i(day), m, ind.sma)
 
     def window_max_close(self, day: date, w: int, since: date | None) -> tuple[float, date]:
         return ind.window_max_close(self._bars, self._i(day), w, since)

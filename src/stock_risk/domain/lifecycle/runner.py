@@ -71,12 +71,16 @@ def run_bars(
     params: EngineParams,
     replay_start: date | None = None,
     end_reason: EndReason | None = None,
+    sources: Sequence[ComputedIndicators] | None = None,
 ) -> RunResult:
     """presence：观察区间内逐日"有日线 / 缺价"；
-    bars：观察区间内的有效日线（复权价，已量化与更正）。"""
-    by_day = {b.day: b for b in bars}
+    bars：观察区间内的有效日线（复权价，已量化与更正）。
+    sources：可传入 build_sources 预先建好的各历史段指标（多个候选共用，须用同一个 G）。"""
     segments = split_segments(presence, params.assumptions.gap_break)
-    sources = [ComputedIndicators(calendar, [by_day[d] for d in s.bar_days]) for s in segments]
+    if sources is None:
+        sources = build_sources(calendar, presence, bars, params.assumptions.gap_break)
+    if len(sources) != len(segments):
+        raise ValueError("sources 与历史段数量不一致（G 不同？）")
     state = initial_state(symbol)
     results: list[StepResult] = []
     seg_i = 0
@@ -89,3 +93,18 @@ def run_bars(
         results.append(r)
         state = r.state
     return _censor(results, state, end_reason)
+
+
+def build_sources(
+    calendar: TradingCalendar,
+    presence: Sequence[DayPresence],
+    bars: Sequence[DailyBar],
+    gap_break: int,
+    cache: bool = True,
+) -> list[ComputedIndicators]:
+    """按 G 切分历史段，每段一个 ComputedIndicators（指标在新段内重新积累）。"""
+    by_day = {b.day: b for b in bars}
+    return [
+        ComputedIndicators(calendar, [by_day[d] for d in s.bar_days], cache=cache)
+        for s in split_segments(presence, gap_break)
+    ]

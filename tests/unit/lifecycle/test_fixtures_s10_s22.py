@@ -11,7 +11,7 @@ from stock_risk.domain.lifecycle.params import FIXED, AtrBasis, ReleasePath
 from stock_risk.domain.lifecycle.runner import run_with_source
 from stock_risk.domain.numeric import quantize_price
 from tests.unit.lifecycle.harness import START_DAY, SYMBOL, Run, f_bars, params, s_run, weekdays
-from tests.unit.lifecycle.test_fixtures_s1_s9 import assert_day
+from tests.unit.lifecycle.test_fixtures_s1_s9 import S1_ROWS, assert_day
 
 E = EventType
 DIRECT, TWO = ReleasePath.DIRECT, ReleasePath.TWO_STAGE
@@ -229,7 +229,7 @@ def test_S15_release_from_watch() -> None:
     assert run.types("d5") == sorted([E.STABILIZED, E.RECOVERY_OBS])
     assert run.rec("d7").rc_cand == 3
     rel = run.event("d7", E.RELEASE)
-    assert rel.basis["reasons"] == ["a′", "b′"]  # 推导：计数段证据 {a′, b′}
+    assert rel.basis["reasons"] == ["a′", "b′"]  # I21：d7 当日证据 {a′, b′}
     assert run.rec("d7").display is Display.NORMAL
     assert run.invariants() == []
 
@@ -503,4 +503,28 @@ def test_S22_revoked_then_recovery_fail() -> None:
     fail = run.event("y6", E.RECOVERY_FAIL)
     assert fail.identity == (eid, 1) and fail.basis["reason"] == "NEW_LOW"
     assert run.types("y6") == [E.RECOVERY_FAIL]  # 不再发撤销
+    assert run.invariants() == []
+
+
+def test_I21_release_reason_is_todays_evidence_with_alternating_segment() -> None:
+    """I21：rc 计数段内证据交替 {a′}、{a′}、{b′}，解除原因只记 b′，计数段证据为三天各自的集合。
+
+    构造（推导）：沿用 S1 至 s6 降级（关注，L_ep = 78，H_d = 85）；
+    r1、r2 收盘 97 而 SMA10 = 99（确认不成立，只有 a′：D_ep = 1.5 < 2）；
+    r3 收盘 95、SMA10 = 90（确认与强恢复成立，D_ep = 2.5 不小于 2，只有 b′；
+    回吐 (97 − 95) / 2 = 1 < 2）。
+    """
+    rows = [r for r in S1_ROWS if r[0] in {"s0", "s1", "s2", "s3", "s4", "s5", "s6"}]
+    rows += [("r1", 97, 99), ("r2", 97, 99), ("r3", 95, 90)]
+    run = s_run(rows, params())
+    assert run.rec("s6").level is Level.WATCH
+    assert [run.rec(x).evidence for x in ("r1", "r2", "r3")] == [
+        frozenset({"a′"}),
+        frozenset({"a′"}),
+        frozenset({"b′"}),
+    ]
+    assert run.rec("r3").rc_cand == 3
+    rel = run.event("r3", E.RELEASE)
+    assert rel.basis["reasons"] == ["b′"]
+    assert rel.basis["segment"] == [["a′"], ["a′"], ["b′"]]
     assert run.invariants() == []

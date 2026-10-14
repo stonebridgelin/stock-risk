@@ -6,9 +6,13 @@ from stock_risk.application.audit_raw_data import AuditRawDataService
 from stock_risk.application.check_calendar import CheckCalendarService
 from stock_risk.application.fetch_raw_data import FetchRawDataService
 from stock_risk.application.market_data_loader import MarketDataLoader
+from stock_risk.application.replay import ReplayService
+from stock_risk.application.replay_run import ReplayRunService
 from stock_risk.application.show_ranges import ShowRangesService
 from stock_risk.config.settings import Settings
 from stock_risk.infrastructure.calendars.xnys import ExchangeCalendarsXnys
+from stock_risk.infrastructure.replay.environment import LocalRunEnvironment
+from stock_risk.infrastructure.replay.files import ReplayFileSink
 from stock_risk.infrastructure.storage.audit_report_writer import AuditReportFileWriter
 from stock_risk.infrastructure.storage.csv_config_providers import (
     CsvListingPeriodProvider,
@@ -67,4 +71,19 @@ def build_show_ranges_service(settings: Settings) -> ShowRangesService:
         loader=build_market_data_loader(settings),
         universe=CsvUniverseProvider(settings.exploration_universe_file),
         writer=RangesFileWriter(),
+    )
+
+
+def build_replay_service(settings: Settings) -> ReplayService:
+    return ReplayService(
+        loader=build_market_data_loader(settings),
+        universe=CsvUniverseProvider(settings.exploration_universe_file),
+    )
+
+
+def build_replay_run_service(settings: Settings) -> ReplayRunService:
+    return ReplayRunService(
+        replay=build_replay_service(settings),
+        sink=ReplayFileSink(settings.replay_output_dir),
+        env=LocalRunEnvironment(settings.project_root),
     )

@@ -233,8 +233,8 @@ def _counters_watch(
     if hit_x or hit_r:
         segment = (*ep.rc_segment, ev)
         why = [DIRECT_STRONG_RECOVERY] if hit_x else []
-        if hit_r:  # 只有 rc 达到 d：记该 rc 计数段的证据（a′ / b′）
-            why += ordered(frozenset().union(*segment))
+        if hit_r:  # I21：rc 达到 d 时记达到 d 当日的证据（a′、b′ 排序）；计数段每日证据另存
+            why += ordered(ev)
         return _release(w, "T12", why, segment, {"rc_cand": rc_cand, "xc_cand": xc_cand})
     w.transition = "T13"
     w.ep = replace(ep, rc=rc_cand, xc=xc_cand, rc_segment=(*ep.rc_segment, ev) if ev else ())

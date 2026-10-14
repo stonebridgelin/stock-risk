@@ -114,12 +114,13 @@ class MarketDataLoader:
             )
         return self._calendar
 
-    def load(self, symbol: str) -> ObservedData:
+    def load(self, symbol: str, corrected: bool = True) -> ObservedData:
+        """corrected = False：不应用已登记的更正，只用于 SHLD 原口径的对照回放（I11）。"""
         history = self._parsed(symbol)
         if not history.bars:
             raise InvalidInputError(f"{symbol}: 没有日线")
         listing = self._listings.get(symbol)
-        corrs = self._corrections.get(symbol, ())
+        corrs = self._corrections.get(symbol, ()) if corrected else ()
         if corrs:  # ③
             history = apply_corrections(history, corrs, listing)
         calendar = self.calendar()

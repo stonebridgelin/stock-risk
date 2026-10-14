@@ -102,3 +102,16 @@ def candidate_grid() -> tuple[tuple[int, Candidate], ...]:
         (i, Candidate(**dict(zip(names, combo, strict=True))))  # type: ignore[arg-type]
         for i, combo in enumerate(combos, start=1)
     )
+
+
+# I7：参考组合（数值维度固定）× 全部 12 种结构组合
+REFERENCE_NUMERIC = {"n": 20, "k1": 2, "k2": 4, "k": 3, "d": 3, "u_rel": 3}
+
+
+def reference_candidates() -> tuple[tuple[int, Candidate], ...]:
+    """12 组参考候选，用网格编号标识（I7）。"""
+    return tuple(
+        (i, c)
+        for i, c in candidate_grid()
+        if all(getattr(c, k) == v for k, v in REFERENCE_NUMERIC.items())
+    )

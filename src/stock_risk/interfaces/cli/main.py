@@ -7,6 +7,8 @@
     uv run stock-risk audit-raw                       审计 data/raw，输出到 output/audit/<日期>/
     uv run stock-risk check-calendar                  核对交易日历代理（output/calendar_check/）
     uv run stock-risk show-ranges                     三个区间与缺价日（output/ranges/）
+    uv run stock-risk replay --candidates reference12 12 组参考候选回放与图表（output/replay/）
+    uv run stock-risk replay --candidates all         768 组全量汇总（多进程）
 """
 
 from __future__ import annotations
@@ -20,6 +22,7 @@ from stock_risk.bootstrap import (
     build_audit_raw_data_service,
     build_check_calendar_service,
     build_fetch_raw_data_service,
+    build_replay_run_service,
     build_show_ranges_service,
 )
 from stock_risk.config.settings import load_settings
@@ -77,6 +80,29 @@ def _cmd_show_ranges(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_replay(args: argparse.Namespace) -> int:
+    from datetime import datetime
+
+    service = build_replay_run_service(load_settings())
+    symbols = [s for s in args.symbols.split(",") if s.strip()] if args.symbols else None
+    started = datetime.now().astimezone()
+    if args.candidates == "reference12":
+        report = service.run_reference(started, lambda: datetime.now().astimezone(), symbols)
+    else:
+        report = service.run_all(
+            started, lambda: datetime.now().astimezone(), symbols, workers=args.workers
+        )
+    m = report.manifest
+    print(f"run_id = {report.run_id}（{report.run_kind}），用时 {m.get('elapsed_seconds')} 秒")
+    print(
+        f"不变量违反 {m.get('invariant_violations')} 项；失败 {len(m.get('failed', []))} 项；"
+        f"一致性问题 {m.get('consistency_problem_count', 0)} 项；"
+        f"I17 ② {'通过' if m.get('i17_ok', True) else '不通过'}"
+    )
+    print(f"输出目录：{report.run_dir}")
+    return 0 if report.ok else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="stock-risk")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -92,6 +118,14 @@ def main(argv: list[str] | None = None) -> int:
 
     c = sub.add_parser("check-calendar", help="用 XNYS 独立日历核对 SPY 日历代理（I13）")
     c.set_defaults(func=_cmd_check_calendar)
+
+    rp = sub.add_parser(
+        "replay", help="回放：reference12 = 12 组参考候选全部输出；all = 768 组汇总"
+    )
+    rp.add_argument("--candidates", choices=["reference12", "all"], default="reference12")
+    rp.add_argument("--symbols", default="", help="只回放这些个股，逗号分隔")
+    rp.add_argument("--workers", type=int, default=None, help="all 模式的进程数，默认 CPU 数 − 1")
+    rp.set_defaults(func=_cmd_replay)
 
     r = sub.add_parser("show-ranges", help="输出各代码的三个区间、端点类型与缺价日（I2、I3）")
     r.set_defaults(func=_cmd_show_ranges)

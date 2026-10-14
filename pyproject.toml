@@ -3,7 +3,9 @@ name = "stock-risk"
 version = "0.1.0"
 description = "单只美股风险预警与解除（探索阶段）"
 requires-python = ">=3.13"
-dependencies = []
+dependencies = [
+    "plotly==7.1.0",  # 回放交互图（T04b），离线生成
+]
 
 [project.scripts]
 stock-risk = "stock_risk.interfaces.cli.main:main"
