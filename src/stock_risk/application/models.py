@@ -7,6 +7,16 @@ from datetime import date, datetime
 
 
 @dataclass(frozen=True, slots=True)
+class SegmentRecord:
+    """分段拼接中一段实际取得的数据：数据源代码、首末日期、行数。"""
+
+    source_ticker: str
+    first_day: date | None
+    last_day: date | None
+    rows: int
+
+
+@dataclass(frozen=True, slots=True)
 class FetchOutcome:
     symbol: str
     category: str
@@ -19,6 +29,7 @@ class FetchOutcome:
     warnings: tuple[str, ...] = ()
     error: str | None = None
     skipped: bool = False
+    segments: tuple[SegmentRecord, ...] = ()
 
 
 @dataclass(slots=True)

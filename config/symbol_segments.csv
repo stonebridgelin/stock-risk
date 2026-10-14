@@ -1,0 +1,6 @@
+# 多代码分段拼接（T00 / D1）。同一 symbol 的各行按顺序组成分段；from / to 为空表示不设该端边界
+# 有分段配置的代码忽略 universe_exploration.csv 中的 source_candidates
+# 修改本文件需同步 docs/develop_docs/02-数据获取.md
+symbol,source_ticker,from,to,note
+VRX,VRX,,2018-07-13,Valeant 原代码
+VRX,BHC,2018-07-16,,2018-07 改名 Bausch Health，代码改为 BHC

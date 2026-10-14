@@ -2,8 +2,15 @@
 
 from __future__ import annotations
 
+from stock_risk.application.audit_raw_data import AuditRawDataService
 from stock_risk.application.fetch_raw_data import FetchRawDataService
 from stock_risk.config.settings import Settings
+from stock_risk.infrastructure.storage.audit_report_writer import AuditReportFileWriter
+from stock_risk.infrastructure.storage.csv_config_providers import (
+    CsvListingPeriodProvider,
+    CsvSegmentProvider,
+)
+from stock_risk.infrastructure.storage.csv_raw_reader import CsvRawDataReader
 from stock_risk.infrastructure.storage.csv_raw_repository import CsvRawDataRepository
 from stock_risk.infrastructure.storage.csv_universe_provider import CsvUniverseProvider
 from stock_risk.infrastructure.tiingo.client import TiingoPriceSource
@@ -16,4 +23,15 @@ def build_fetch_raw_data_service(settings: Settings) -> FetchRawDataService:
         source=TiingoPriceSource(settings.tiingo_api_key),
         universe=CsvUniverseProvider(settings.exploration_universe_file),
         repository=CsvRawDataRepository(settings.raw_data_dir),
+        segments=CsvSegmentProvider(settings.symbol_segments_file),
+    )
+
+
+def build_audit_raw_data_service(settings: Settings) -> AuditRawDataService:
+    return AuditRawDataService(
+        reader=CsvRawDataReader(settings.raw_data_dir),
+        universe=CsvUniverseProvider(settings.exploration_universe_file),
+        segments=CsvSegmentProvider(settings.symbol_segments_file),
+        listings=CsvListingPeriodProvider(settings.listing_periods_file),
+        writer=AuditReportFileWriter(),
     )

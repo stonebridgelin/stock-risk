@@ -56,7 +56,23 @@ def _jsonable(outcome: FetchOutcome) -> dict[str, Any]:
             d[k] = d[k].isoformat()
     d["warnings"] = list(d["warnings"])
     d.pop("skipped", None)
+    for seg in d["segments"]:
+        for k in ("first_day", "last_day"):
+            if isinstance(seg[k], date):
+                seg[k] = seg[k].isoformat()
+    if not d["segments"]:
+        d.pop("segments")
     return d
+
+
+def _segments_text(r: dict[str, Any]) -> str:
+    segs = r.get("segments") or []
+    if not segs:
+        return ""
+    parts = [
+        f"{s['source_ticker']} {s['first_day']} ~ {s['last_day']}（{s['rows']} 行）" for s in segs
+    ]
+    return "；分段拼接: " + "，".join(parts)
 
 
 class CsvRawDataRepository:
@@ -154,12 +170,15 @@ class CsvRawDataRepository:
         ]
         for s, r in ok.items():
             alias = (
-                "" if r.get("source_ticker") == s else f"（数据源代码 {r.get('source_ticker')}）"
+                ""
+                if r.get("source_ticker") == s or r.get("segments")
+                else f"（数据源代码 {r.get('source_ticker')}）"
             )
             warn = f"，质量提示 {len(r.get('warnings', []))} 条" if r.get("warnings") else ""
             lines.append(
                 f"  {s}{alias} [{r.get('category')}]: {r.get('rows')} 行 "
                 f"{r.get('first_day')} ~ {r.get('last_day')}，公司行动 {r.get('actions')} 条{warn}"
+                f"{_segments_text(r)}"
             )
         lines += ["", f"缺失 {len(bad)} 个:"]
         lines += [f"  {s} [{r.get('category')}]: {r.get('error')}" for s, r in bad.items()]

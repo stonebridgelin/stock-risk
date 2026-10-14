@@ -40,6 +40,18 @@ class Settings:
     def exploration_universe_file(self) -> Path:
         return self.project_root / "config" / "universe_exploration.csv"
 
+    @property
+    def symbol_segments_file(self) -> Path:
+        return self.project_root / "config" / "symbol_segments.csv"
+
+    @property
+    def listing_periods_file(self) -> Path:
+        return self.project_root / "config" / "listing_periods.csv"
+
+    @property
+    def audit_output_dir(self) -> Path:
+        return self.project_root / "output" / "audit"
+
 
 def load_settings(project_root: Path = PROJECT_ROOT) -> Settings:
     file_values = _parse_env_file(project_root / ".env")
