@@ -24,6 +24,7 @@ from stock_risk.bootstrap import (
     build_fetch_raw_data_service,
     build_replay_run_service,
     build_show_ranges_service,
+    build_v0_regression,
 )
 from stock_risk.config.settings import load_settings
 
@@ -103,6 +104,26 @@ def _cmd_replay(args: argparse.Namespace) -> int:
     return 0 if report.ok else 1
 
 
+def _cmd_regress_v0(args: argparse.Namespace) -> int:
+    from stock_risk.application.v0_regression import run_v0_regression
+
+    settings = load_settings()
+    replay, sink = build_v0_regression(settings)
+    baseline = settings.replay_output_dir / args.baseline
+    if not baseline.is_dir():
+        print(f"找不到基准运行目录：{baseline}")
+        return 2
+    report = run_v0_regression(replay, sink, baseline)
+    print(
+        f"基准 {report.baseline_run_id}：比较 {report.compared_targets} 套、"
+        f"{report.compared_rows} 行、{report.compared_cells} 个单元格；"
+        f"差异 {report.difference_count} 项"
+    )
+    for d in report.differences:
+        print(f"  {d}")
+    return 0 if report.identical else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="stock-risk")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -126,6 +147,12 @@ def main(argv: list[str] | None = None) -> int:
     rp.add_argument("--symbols", default="", help="只回放这些个股，逗号分隔")
     rp.add_argument("--workers", type=int, default=None, help="all 模式的进程数，默认 CPU 数 − 1")
     rp.set_defaults(func=_cmd_replay)
+
+    rg = sub.add_parser(
+        "regress-v0", help="V0 真实数据回归：与一次正式运行的原有列逐值比较（T06a）"
+    )
+    rg.add_argument("--baseline", required=True, help="基准 run_id（output/replay/ 下的目录名）")
+    rg.set_defaults(func=_cmd_regress_v0)
 
     r = sub.add_parser("show-ranges", help="输出各代码的三个区间、端点类型与缺价日（I2、I3）")
     r.set_defaults(func=_cmd_show_ranges)

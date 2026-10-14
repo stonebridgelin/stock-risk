@@ -123,3 +123,25 @@ def test_computed_r2_ok_path() -> None:
 def test_computed_rejects_days_outside_calendar() -> None:
     with pytest.raises(InvalidInputError):
         ComputedIndicators(CAL, bars_on([date(2019, 3, 9)], [1]))
+
+
+def test_range_max_window_matches_scan_with_ties() -> None:
+    """ComputedIndicators 的稀疏表窗口最高与逐条扫描的规则相同（并列取最近；since 截断）。"""
+    import random
+
+    from stock_risk.domain import indicators as ind
+
+    rng = random.Random(3)
+    days = [D0 + timedelta(days=i) for i in range(400) if (D0 + timedelta(days=i)).weekday() < 5]
+    closes = [float(rng.choice([95, 96, 97, 98, 99, 100])) for _ in days]
+    bars = [
+        DailyBar(d, c, c + 1, c - 1, c, 1, c, c + 1, c - 1, c)
+        for d, c in zip(days, closes, strict=True)
+    ]
+    src = ComputedIndicators(TradingCalendar.from_days(days), bars)
+    for i in range(0, len(days), 7):
+        for w in (1, 5, 63, 252):
+            since = days[max(0, i - rng.randint(0, 30))] if i % 2 else None
+            assert src.window_max_close(days[i], w, since) == ind.window_max_close(
+                bars, i, w, since
+            )

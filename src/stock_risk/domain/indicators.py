@@ -119,3 +119,34 @@ def max_close_prior(bars: Sequence[DailyBar], i: int, k: int) -> float | None:
 def history_sufficient(valid_bars: int, w: int, n: int) -> bool:
     """当前历史段有效日线达到 W + N 条才可计算（v0.7 第 1.2 节第 3 步；13 号 S21a、S21b）。"""
     return valid_bars >= w + n
+
+
+class RangeMaxIndex:
+    """区间最高收盘的稀疏表：O(n log n) 预处理，O(1) 查询；并列取最近（下标较大者）。
+
+    与 window_max_close 的规则相同，用于长窗口（W_L = 252）等不宜逐日扫描的场合。
+    """
+
+    def __init__(self, closes: Sequence[float]) -> None:
+        n = len(closes)
+        self._closes = list(closes)
+        level = list(range(n))
+        self._table = [level]
+        width = 1
+        while 2 * width <= n:
+            prev = self._table[-1]
+            level = [self._better(prev[i], prev[i + width]) for i in range(n - 2 * width + 1)]
+            self._table.append(level)
+            width *= 2
+
+    def _better(self, i: int, j: int) -> int:
+        """收盘较高者；相等时取下标较大（较近）者。"""
+        ci, cj = self._closes[i], self._closes[j]
+        return i if ci > cj or (ci == cj and i > j) else j
+
+    def argmax(self, lo: int, hi: int) -> int:
+        """[lo, hi]（含两端）内最高收盘的下标，并列取最近。"""
+        if not 0 <= lo <= hi < len(self._closes):
+            raise InvalidInputError(f"区间越界: [{lo}, {hi}]")
+        k = (hi - lo + 1).bit_length() - 1
+        return self._better(self._table[k][lo], self._table[k][hi - (1 << k) + 1])

@@ -12,9 +12,11 @@ from typing import Any
 from stock_risk.domain.indicator_source import IndicatorSource
 from stock_risk.domain.lifecycle.episode_rules import (
     REVOKE_REASON,
+    a_prime,
     confirmation,
     observation_reset,
     ordered,
+    theta,
 )
 from stock_risk.domain.lifecycle.model import (
     DIRECT_STRONG_RECOVERY,
@@ -29,7 +31,8 @@ from stock_risk.domain.lifecycle.model import (
     Level,
     ResetReason,
 )
-from stock_risk.domain.lifecycle.params import Confirm, EngineParams, ReleasePath
+from stock_risk.domain.lifecycle.params import Confirm, EngineParams, RecScale, ReleasePath
+from stock_risk.domain.lifecycle.start_paths import full_alert
 from stock_risk.domain.numeric import Kind, ge, lt
 
 
@@ -52,6 +55,7 @@ class _Day:
     day: date
     close: float
     d_ep: float
+    dd_ep: float
     new_low: bool
     giveback: float | None
     snapshot: Episode  # 观察重置前（昨日日末）的预警，用于终止事件的身份
@@ -90,12 +94,15 @@ def _transition_evidence(
         assert cur.h_d is not None
         h_d = max(cur.h_d, c)
         cur, giveback = replace(cur, h_d=h_d), (h_d - c) / cur.atr_ep
-    w = _Day(cur, day, c, (ep.p_ep - c) / ep.atr_ep, new_low, giveback, snapshot=ep)
+    d_ep, dd_ep = (ep.p_ep - c) / ep.atr_ep, 1 - c / ep.p_ep
+    w = _Day(cur, day, c, d_ep, dd_ep, new_low, giveback, snapshot=ep)
     if new_low:
         w.ep = observation_reset(replace(w.ep, l_ep=c, l_ep_day=day), day)
         w.reasons.append(ResetReason.NEW_LOW)
     w.fields.update(
         d_ep=w.d_ep,
+        dd_ep=w.dd_ep,
+        theta=theta(ep, params),
         new_low=new_low,
         giveback=giveback,
         confirmed=False,
@@ -112,11 +119,18 @@ def _escalation(w: _Day, params: EngineParams) -> tuple[str, str] | None:
     cand, tol, ep = params.candidate, params.tol, w.ep
     if ep.level is not Level.WATCH:
         return None
-    if not ep.downgraded and ge(w.d_ep, cand.k2, Kind.RATIO, tol):
+    full = full_alert(w.d_ep, w.dd_ep, params)  # V0 下即 D_ep ≥ k₂
+    if not ep.downgraded and full:
         return "T9", "D_EP_GE_K2"
     if ep.downgraded and w.new_low:
         return "T10", "NEW_LOW"
-    if ep.downgraded and w.giveback is not None and ge(w.giveback, cand.k1, Kind.RATIO, tol):
+    t11_ok = full or not params.switches.t11_full  # t11_full = ON：还要完整警戒条件
+    if (
+        ep.downgraded
+        and w.giveback is not None
+        and ge(w.giveback, cand.k1, Kind.RATIO, tol)
+        and t11_ok
+    ):
         return "T11", "GIVEBACK"
     return None
 
@@ -155,18 +169,22 @@ def _observation_evidence(w: _Day, src: IndicatorSource, params: EngineParams) -
     ep = w.ep
     stable = not w.new_low and ep.since_obs >= cand.k
     long_stable = not w.new_low and ep.since_obs >= params.assumptions.k_stab
-    amount = min(cand.u_rel * ep.atr_ep, params.assumptions.phi * (ep.p_ep - ep.l_ep))
+    sw = params.switches
+    # rec_scale = PRICE：恢复侧用 ATR_rec = ATR_ep × L_ep / P_ep（L_ep 为第 7 步之后的值）
+    rec_atr = ep.atr_ep * ep.l_ep / ep.p_ep if sw.rec_scale is RecScale.PRICE else ep.atr_ep
+    amount = min(cand.u_rel * rec_atr, params.assumptions.phi * (ep.p_ep - ep.l_ep))
     strong = w.confirm and ge(c - ep.l_ep, amount, Kind.PRICE, tol)
     evidence: set[str] = set()
     if not w.new_low and ep.level is Level.ALERT:
-        if lt(w.d_ep, cand.k2, Kind.RATIO, tol):
+        a_pct = sw.x2 > 0 and lt(w.dd_ep, sw.x2, Kind.RATIO, tol)
+        if lt(w.d_ep, cand.k2, Kind.RATIO, tol) or a_pct:
             evidence.add(EVID_A)
         if w.confirm:
             evidence.add(EVID_B)
         if long_stable:
             evidence.add(EVID_C)
     elif not w.new_low:
-        if lt(w.d_ep, cand.k1, Kind.RATIO, tol):
+        if a_prime(ep, c, w.d_ep, params):
             evidence.add(EVID_A1)
         if strong:
             evidence.add(EVID_B1)
@@ -174,7 +192,8 @@ def _observation_evidence(w: _Day, src: IndicatorSource, params: EngineParams) -
         confirmed=w.confirm,
         stable=stable,
         long_stable=long_stable,
-        u=(c - ep.l_ep) / ep.atr_ep,
+        u=(c - ep.l_ep) / rec_atr,
+        atr_rec=rec_atr if sw.rec_scale is RecScale.PRICE else None,
         strong_threshold=ep.l_ep + amount,
         strong=strong,
         evidence=frozenset(evidence),

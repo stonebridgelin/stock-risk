@@ -87,3 +87,8 @@ def build_replay_run_service(settings: Settings) -> ReplayRunService:
         sink=ReplayFileSink(settings.replay_output_dir),
         env=LocalRunEnvironment(settings.project_root),
     )
+
+
+def build_v0_regression(settings: Settings) -> tuple[ReplayService, ReplayFileSink]:
+    """V0 真实数据回归（T06a）所需的回放用例与表格读写。"""
+    return build_replay_service(settings), ReplayFileSink(settings.replay_output_dir)

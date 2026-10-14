@@ -70,6 +70,17 @@ def build_record(
         "reset_reasons": (),
         "transition": None,
         "end_reason": None,
+        "dd_t": None,
+        "dd_l": None,
+        "dd_ep": None,
+        "s_ok": None,
+        "r_ok": None,
+        "l_ok": None,
+        "r2_filtered": None,
+        "entry_path": ep.entry_path if ep else None,
+        "delta_start": ep.delta_start if ep else None,
+        "theta": None,
+        "atr_rec": None,
     }
     if extra:
         unknown = set(extra) - set(base)

@@ -15,7 +15,7 @@ from dataclasses import replace
 from datetime import date
 from typing import Any
 
-from stock_risk.domain.indicator_source import IndicatorSource, compute_r2
+from stock_risk.domain.indicator_source import IndicatorSource
 from stock_risk.domain.lifecycle.episode_rules import observation_reset
 from stock_risk.domain.lifecycle.episode_step import step_episode
 from stock_risk.domain.lifecycle.model import (
@@ -30,9 +30,10 @@ from stock_risk.domain.lifecycle.model import (
     SecurityState,
     StepResult,
 )
-from stock_risk.domain.lifecycle.params import AtrBasis, EngineParams
+from stock_risk.domain.lifecycle.params import EngineParams
 from stock_risk.domain.lifecycle.records import build_record
-from stock_risk.domain.numeric import InvalidInputError, Kind, ge
+from stock_risk.domain.lifecycle.start_paths import evaluate_start
+from stock_risk.domain.numeric import InvalidInputError
 
 
 def episode_id_for(symbol: str, start_day: date) -> str:
@@ -160,67 +161,51 @@ def _missing_day(
 def _no_episode(
     state: SecurityState, day: date, src: IndicatorSource, params: EngineParams, from_break: bool
 ) -> StepResult:
-    """B 第 4–5 步（T6–T8）。"""
-    cand, tol = params.candidate, params.tol
-    c = src.close(day)
-    p_max, p_day = src.window_max_close(day, params.fixed.w, state.last_release)
-    atr_peak = src.atr(p_day, cand.n)
-    if atr_peak is None:
-        raise InvalidInputError(f"{day}: 峰值日 {p_day} 的 ATR_{cand.n} 不可计算")
-    a_start = atr_peak
-    if cand.atr_basis is AtrBasis.MIN:
-        atr_t = src.atr(day, cand.n)
-        if atr_t is None:
-            raise InvalidInputError(f"{day}: ATR_{cand.n} 不可计算")
-        a_start = min(atr_peak, atr_t)
-    d_t = (p_max - c) / a_start
-    r2 = compute_r2(src, day, cand.n, params.fixed.g, tol)
-    extra: dict[str, Any] = {
-        "d_t": d_t,
-        "a_start": a_start,
-        "r2_status": r2.status.value,
-        "r2_score": r2.gap_score,
-        "r2_triggered": r2.triggered,
-    }
-    reasons: list[str] = []
-    if ge(d_t, cand.k2, Kind.RATIO, tol):
-        level, transition, reasons = Level.ALERT, "T6", ["R1_GE_K2"]
-    elif ge(d_t, cand.k1, Kind.RATIO, tol) or r2.triggered:
-        level, transition = Level.WATCH, "T7"
-        if ge(d_t, cand.k1, Kind.RATIO, tol):
-            reasons.append("R1_GE_K1")
-    else:
+    """B 第 4–5 步（T6–T8；v0.8 第 1A.3 节）。"""
+    dec = evaluate_start(src, day, state.last_release, params)
+    extra: dict[str, Any] = dict(dec.record)
+    if dec.level is None:
         state = replace(state, display=Display.NORMAL)
         extra["transition"] = "T4" if from_break else "T8"
+        extra.pop("d_ep", None)
+        extra.pop("dd_ep", None)
         rec = build_record(
             state, day, params, in_replay=True, data_status=DataStatus.HAS_BAR, ep=None, extra=extra
         )
         return StepResult(state, (), rec)
-    if r2.triggered:
-        reasons.append("GAP")
-    l_ep, l_day = src.min_close(p_day, day)
+    c = src.close(day)
+    l_ep, l_day = src.min_close(dec.p_ep_day, day)
     eid = episode_id_for(state.symbol, day)
-    ep = Episode(eid, day, level, p_max, p_day, a_start, l_ep, l_day, obs_start=day, cycle_no=1)
-    start = Event(
-        EventType.START,
+    ep = Episode(
+        eid,
         day,
-        (eid, EventType.START.value, day),
-        transition,
-        {
-            "reasons": reasons,
-            "level": level.name,
-            "d_t": d_t,
-            "a_start": a_start,
-            "p_ep": p_max,
-            "p_ep_day": p_day,
-            "l_ep": l_ep,
-            "close": c,
-            "r2_status": r2.status.value,
-            "r2_score": r2.gap_score,
-        },
+        dec.level,
+        dec.p_ep,
+        dec.p_ep_day,
+        dec.atr_ep,
+        l_ep,
+        l_day,
+        obs_start=day,
+        cycle_no=1,
+        entry_path=dec.entry_path or "S",
+        delta_start=dec.p_ep - c,
     )
+    basis: dict[str, Any] = {  # v0.7.1 原有字段，顺序不变（V0 回归逐值比较）
+        "reasons": list(dec.reasons),
+        "level": dec.level.name,
+        "d_t": dec.basis["d_t"],
+        "a_start": dec.basis["a_start"],
+        "p_ep": dec.p_ep,
+        "p_ep_day": dec.p_ep_day,
+        "l_ep": l_ep,
+        "close": c,
+        "r2_status": dec.basis["r2_status"],
+        "r2_score": dec.basis["r2_score"],
+        "v08": dec.basis_v08,  # v0.8 新增数值，输出时单列
+    }
+    start = Event(EventType.START, day, (eid, EventType.START.value, day), dec.transition, basis)
     state = replace(state, episode=ep, display=_display(ep))
-    extra.update(transition=transition, d_ep=d_t)
+    extra["transition"] = dec.transition
     rec = build_record(
         state, day, params, in_replay=True, data_status=DataStatus.HAS_BAR, ep=ep, extra=extra
     )

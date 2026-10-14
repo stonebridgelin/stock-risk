@@ -14,8 +14,8 @@ from stock_risk.domain.lifecycle.model import (
     EVID_C,
     Episode,
 )
-from stock_risk.domain.lifecycle.params import Confirm, EngineParams
-from stock_risk.domain.numeric import InvalidInputError, Kind, gt
+from stock_risk.domain.lifecycle.params import Confirm, EngineParams, ReleaseHyst
+from stock_risk.domain.numeric import InvalidInputError, Kind, gt, lt
 
 EVIDENCE_ORDER = (EVID_A, EVID_B, EVID_C, EVID_A1, EVID_B1)
 REVOKE_REASON = {
@@ -67,3 +67,26 @@ def confirmation(
         return stable and line is not None and gt(close, line, Kind.PRICE, tol), line
     line = ep.box_high if method is Confirm.BOX else src.max_close_prior(day, k)
     return ep.since_obs > k and line is not None and gt(close, line, Kind.PRICE, tol), line
+
+
+def theta(ep: Episode, params: EngineParams) -> float | None:
+    """a′ 回滞的 θ = min(E_entry, Δ_start)（第 1A.5 节）；release_hyst = OLD 时为 None。
+
+    E_entry：S、R 路径为 E₁ = max(k₁ × ATR_ep, x₁ × P_ep)；L 路径为 x_L × P_ep。
+    """
+    sw = params.switches
+    if sw.release_hyst is ReleaseHyst.OLD:
+        return None
+    if ep.entry_path == "L":
+        e_entry = sw.x_long * ep.p_ep
+    else:
+        e_entry = max(params.candidate.k1 * ep.atr_ep, sw.x1 * ep.p_ep)
+    return min(e_entry, ep.delta_start)
+
+
+def a_prime(ep: Episode, close: float, d_ep: float, params: EngineParams) -> bool:
+    """E_rel 的 a′：OLD 为 D_ep < k₁（ε_r）；EFFECTIVE 为 Δ < h × θ（价格比较，ε_p）。"""
+    th = theta(ep, params)
+    if th is None:
+        return lt(d_ep, params.candidate.k1, Kind.RATIO, params.tol)
+    return lt(ep.p_ep - close, params.assumptions.h * th, Kind.PRICE, params.tol)

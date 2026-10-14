@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, fields, replace
 from datetime import date
 from typing import Any
 
@@ -34,6 +34,7 @@ EVENT_COLUMNS = [
     "evidence",
     "segment",
     "values",
+    "values_v08",  # v0.8 新增的 START 数值（第 1A.3 节）；原有列不变
 ]
 EPISODE_COLUMNS = [
     "run_id",
@@ -61,6 +62,12 @@ EPISODE_COLUMNS = [
     "n_escalate",
     "duration_trading_days",
     "observed_valid_days",
+    # v0.8 新增（第 1A.3、1A.7 节）
+    "entry_path",
+    "delta_start",
+    "prev_episode_id",
+    "days_since_prev_release",
+    "start_below_prev_l_ep",
 ]
 
 
@@ -128,6 +135,7 @@ def event_rows(rep: SymbolReplay, run_id: str) -> list[dict[str, Any]]:
         basis.pop("reason", None)
         today = basis.pop("today_evidence", None)
         segment = basis.pop("segment", None)
+        v08 = basis.pop("v08", None)
         before, after = levels[e.day]
         out.append(
             {
@@ -147,6 +155,7 @@ def event_rows(rep: SymbolReplay, run_id: str) -> list[dict[str, Any]]:
                 ),
                 "segment": "" if segment is None else json.dumps(segment, ensure_ascii=False),
                 "values": json.dumps(_jsonable(basis), ensure_ascii=False),
+                "values_v08": "" if v08 is None else json.dumps(_jsonable(v08), ensure_ascii=False),
             }
         )
     return out
@@ -173,6 +182,11 @@ class EpisodeRow:
     n_escalate: int
     duration_trading_days: int  # 自启动日到终止日（含两端）的交易日数
     observed_valid_days: int  # 其中有日线的交易日数
+    entry_path: str | None = None  # v0.8：S / R / L
+    delta_start: float | None = None  # v0.8：P_ep − 启动收盘
+    prev_episode_id: str | None = None  # 第 1A.7 节：上一次预警
+    days_since_prev_release: int | None = None  # 距上一次解除的有效交易日数（上一次不是解除时为空）
+    start_below_prev_l_ep: bool | None = None  # 本次启动收盘是否低于上一次的 L_ep
 
 
 def episode_rows(rep: SymbolReplay) -> list[EpisodeRow]:
@@ -226,9 +240,42 @@ def episode_rows(rep: SymbolReplay) -> list[EpisodeRow]:
                 n_escalate=count[EventType.ESCALATE],
                 duration_trading_days=len(span),
                 observed_valid_days=sum(1 for r in span if r.record.day in closes),
+                entry_path=(start.basis.get("v08") or {}).get("entry_path"),
+                delta_start=start.basis["p_ep"] - start.basis["close"],
             )
         )
-    return out
+    return _link_previous(out, days, closes)
+
+
+def _link_previous(
+    rows: list[EpisodeRow], days: list[date], closes: Mapping[date, float]
+) -> list[EpisodeRow]:
+    """第 1A.7 节的关联字段：只是输出字段，不改变状态机。"""
+    valid = [d for d in days if d in closes]
+    linked: list[EpisodeRow] = []
+    prev: EpisodeRow | None = None
+    for row in sorted(rows, key=lambda r: r.start_date):
+        if prev is None:
+            linked.append(row)
+        else:
+            gap = None
+            if prev.end_reason is EndReason.RELEASE and prev.end_date is not None:
+                gap = sum(1 for d in valid if prev.end_date < d <= row.start_date)
+            below = (
+                None
+                if row.start_close is None or prev.low_close is None
+                else row.start_close < prev.low_close
+            )
+            linked.append(
+                replace(
+                    row,
+                    prev_episode_id=prev.episode_id,
+                    days_since_prev_release=gap,
+                    start_below_prev_l_ep=below,
+                )
+            )
+        prev = row
+    return linked
 
 
 def episode_csv_rows(rep: SymbolReplay, run_id: str, rows: Iterable[EpisodeRow]) -> list[dict]:
@@ -265,6 +312,11 @@ def episode_csv_rows(rep: SymbolReplay, run_id: str, rows: Iterable[EpisodeRow])
                         e.n_escalate,
                         e.duration_trading_days,
                         e.observed_valid_days,
+                        _cell(e.entry_path),
+                        _cell(e.delta_start),
+                        _cell(e.prev_episode_id),
+                        _cell(e.days_since_prev_release),
+                        _cell(e.start_below_prev_l_ep),
                     ],
                     strict=True,
                 )

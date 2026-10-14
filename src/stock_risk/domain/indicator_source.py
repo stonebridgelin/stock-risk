@@ -64,6 +64,10 @@ class IndicatorSource(Protocol):
         """[start, day] 最低收盘及日期（并列取最早）。"""
         ...
 
+    def first_atr_day(self, start: date, day: date, n: int) -> date | None:
+        """[start, day] 内最早一个 ATR_N 可得的日子（v0.8 L 路径的替代尺度）；没有为 None。"""
+        ...
+
     def max_close(self, start: date, end: date) -> float | None:
         """[start, end] 最高收盘（BOX 区间最高）。"""
         ...
@@ -147,6 +151,7 @@ class ComputedIndicators(_ClosesBase):
         super().__init__(calendar, [b.day for b in bars])
         self._bars = tuple(bars)
         self._cache: dict[tuple[str, int, int], float | None] | None = {} if cache else None
+        self._range_max: ind.RangeMaxIndex | None = None
 
     def _memo(self, kind: str, i: int, n: int, fn: _IndexedFn) -> float | None:
         if self._cache is None:
@@ -172,10 +177,27 @@ class ComputedIndicators(_ClosesBase):
         return self._memo("sma", self._i(day), m, ind.sma)
 
     def window_max_close(self, day: date, w: int, since: date | None) -> tuple[float, date]:
-        return ind.window_max_close(self._bars, self._i(day), w, since)
+        """与 indicators.window_max_close 规则相同，用稀疏表查询，不逐日扫描窗口。"""
+        i = self._i(day)
+        if w < 1:
+            raise InvalidInputError(f"W 必须为正: {w}")
+        lo = max(0, i - w + 1)
+        if since is not None:
+            lo = max(lo, bisect.bisect_left(self._days, since))
+        if lo > i:
+            raise InvalidInputError(f"{day}: 受限窗口为空")
+        if self._range_max is None:
+            self._range_max = ind.RangeMaxIndex([b.adj_close for b in self._bars])
+        j = self._range_max.argmax(lo, i)
+        return self._bars[j].adj_close, self._bars[j].day
 
     def min_close(self, start: date, day: date) -> tuple[float, date]:
         return ind.min_close(self._bars, start, self._i(day))
+
+    def first_atr_day(self, start: date, day: date, n: int) -> date | None:
+        i = self._i(day)
+        lo = max(bisect.bisect_left(self._days, start), n)  # ATR_N 需要下标 ≥ N
+        return self._days[lo] if lo <= i else None
 
     def max_close(self, start: date, end: date) -> float | None:
         return ind.max_close(self._bars, start, end)
@@ -250,6 +272,13 @@ class TableIndicators(_ClosesBase):
 
     def min_close(self, start: date, day: date) -> tuple[float, date]:
         return ind.min_close(self._closes(), start, self._i(day))
+
+    def first_atr_day(self, start: date, day: date, n: int) -> date | None:
+        self._i(day)
+        for d in self._days:
+            if start <= d <= day and self.atr(d, n) is not None:
+                return d
+        return None
 
     def max_close(self, start: date, end: date) -> float | None:
         return ind.max_close(self._closes(), start, end)

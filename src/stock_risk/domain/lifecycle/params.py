@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import itertools
+import math
 from dataclasses import dataclass, field
 from enum import StrEnum
 
@@ -60,6 +61,10 @@ class FixedValues:
 FIXED = FixedValues()
 
 
+class IllegalCombination(ValueError):
+    """v0.8 开关的非法组合（10 号第 1A.1 节）。构造时报错，不自动调整。"""
+
+
 @dataclass(frozen=True, slots=True)
 class ExplorationAssumptions:
     """探索假设，非发起人批准值（I6 (a)）。"""
@@ -67,9 +72,81 @@ class ExplorationAssumptions:
     phi: float = 0.5  # 强恢复的收复比例（A1 待批准）
     k_stab: int = 8  # 长期稳定天数（待 SR-M1 登记，须 ≥ 5）
     gap_break: int = 10  # G：历史断点（待 SR-M1 登记，{10, 20} 二选一）
+    h: float = 0.5  # a′ 回滞比例（v0.8 第 1A.1 节固定探索假设）
+    w_long: int = 252  # 长窗口 W_L（v0.8 第 1A.1 节固定探索假设）
+
+    def __post_init__(self) -> None:
+        if not (math.isfinite(self.h) and 0 < self.h <= 1):
+            raise IllegalCombination(f"违反约束 5：0 < h ≤ 1，实际 h = {self.h}")
+        if self.w_long < 1:
+            raise IllegalCombination(f"W_L 必须为正整数，实际 {self.w_long}")
 
 
 EXPLORATION_ASSUMPTIONS = ExplorationAssumptions()
+
+
+class LongPath(StrEnum):
+    OFF = "OFF"
+    X1 = "X1"  # L 路径门槛 x_L = x₁
+    X2 = "X2"  # x_L = x₂
+
+
+class ReleaseHyst(StrEnum):
+    OLD = "OLD"  # a′ = D_ep < k₁
+    EFFECTIVE = "EFFECTIVE"  # a′ = Δ < h × θ（第 1A.5 节）
+
+
+class RecScale(StrEnum):
+    OFF = "OFF"
+    PRICE = "PRICE"  # 恢复侧用 ATR_rec = ATR_ep × L_ep / P_ep（第 1A.6 节）
+
+
+@dataclass(frozen=True, slots=True)
+class V08Switches:
+    """v0.8 开关（10 号第 1A.1 节）。默认全部关闭（V0），此时与 v0.7.1 逐项相同。
+
+    x1、x2 为比例（0.08 = 8%），0 表示关闭。构造时检查约束 1–4，违反即报错。
+    """
+
+    x1: float = 0.0
+    x2: float = 0.0
+    t11_full: bool = False
+    long_path: LongPath = LongPath.OFF
+    r2_floor: bool = False
+    release_hyst: ReleaseHyst = ReleaseHyst.OLD
+    rec_scale: RecScale = RecScale.OFF
+
+    def __post_init__(self) -> None:
+        for name in ("x1", "x2"):
+            v = getattr(self, name)
+            if not (math.isfinite(v) and 0 <= v < 1):
+                raise IllegalCombination(f"{name} 必须是 [0, 1) 内的比例，实际 {v}")
+        if self.x2 > 0 and not self.t11_full:
+            raise IllegalCombination("违反约束 1：x₂ > 0 时 t11_full 必须为 ON")
+        if self.long_path is LongPath.X1 and self.x1 == 0:
+            raise IllegalCombination("违反约束 2：long_path = X1 时 x₁ 必须 > 0")
+        if self.long_path is LongPath.X2 and self.x2 == 0:
+            raise IllegalCombination("违反约束 2：long_path = X2 时 x₂ 必须 > 0")
+        if self.r2_floor and self.x1 == 0:
+            raise IllegalCombination("违反约束 3：r2_floor = ON 时 x₁ 必须 > 0")
+        if self.x1 > 0 and self.x2 > 0 and not self.x2 > self.x1:
+            raise IllegalCombination("违反约束 4：x₁ > 0 且 x₂ > 0 时必须 x₂ > x₁")
+
+    @property
+    def x_long(self) -> float:
+        """L 路径门槛 x_L；long_path = OFF 时为 0（不计算长窗口）。"""
+        if self.long_path is LongPath.X1:
+            return self.x1
+        if self.long_path is LongPath.X2:
+            return self.x2
+        return 0.0
+
+    @property
+    def is_v0(self) -> bool:
+        return self == V0_SWITCHES
+
+
+V0_SWITCHES = V08Switches()
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,6 +155,7 @@ class EngineParams:
     assumptions: ExplorationAssumptions
     fixed: FixedValues = FIXED
     tol: Tolerances = field(default=DEFAULT_TOLERANCES)
+    switches: V08Switches = V0_SWITCHES
 
 
 # 第 4.1 节：维度自上而下、候选值按表中顺序；网格序号按字典序编号 1–768

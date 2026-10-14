@@ -120,6 +120,8 @@ class Episode:
     obs_n: int = 0  # 本周期已发出的 RECOVERY_OBS 次数；obs_issued = obs_n > 0
     stabilized: bool = False  # 本周期是否已发 STABILIZED
     prev_confirm: bool = False
+    entry_path: str = "S"  # v0.8：启动路径 S / R / L，启动时冻结（第 1A.3 节）
+    delta_start: float = 0.0  # v0.8：Δ_start = P_ep − C_start，启动时冻结
 
     @property
     def obs_issued(self) -> bool:
@@ -191,6 +193,18 @@ class DailyRecord:
     reset_reasons: tuple[ResetReason, ...]
     transition: str | None  # 当日等级或数据转移 T1–T16
     end_reason: EndReason | None  # 当日终止的预警及原因
+    # ---- v0.8 诊断字段（第 1A 节；开关关闭时照常计算可得的量） ----
+    dd_t: float | None = None  # 1 − C / 短窗口 P^max（无预警时）
+    dd_l: float | None = None  # 1 − C / 长窗口 P^max_L（long_path ≠ OFF 且无预警时）
+    dd_ep: float | None = None  # 1 − C / P_ep（有预警时）
+    s_ok: bool | None = None  # 启动路径是否成立（无预警且可计算时）
+    r_ok: bool | None = None
+    l_ok: bool | None = None
+    r2_filtered: bool | None = None  # R2 触发但被 r2_floor 过滤
+    entry_path: str | None = None
+    delta_start: float | None = None
+    theta: float | None = None  # a′ 回滞的 θ（release_hyst = EFFECTIVE 时）
+    atr_rec: float | None = None  # 恢复尺度（rec_scale = PRICE 时）
 
 
 @dataclass(frozen=True, slots=True)

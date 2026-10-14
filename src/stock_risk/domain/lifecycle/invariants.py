@@ -1,4 +1,5 @@
-"""13 号文档第 4 节的 9 条不变量。纯函数，输入一段逐日结果，返回违反项（空表示全部满足）。
+"""13 号文档第 4 节的不变量。①–⑨ 总是检查；v0.8 的 ⑩、⑪ 在相应开关打开时检查。
+纯函数，输入一段逐日结果，返回违反项（空表示全部满足）。
 
 夹具测试与以后的真实回放都调用它。
 """
@@ -15,7 +16,9 @@ from stock_risk.domain.lifecycle.model import (
     Level,
     StepResult,
 )
-from stock_risk.domain.lifecycle.params import Confirm, EngineParams, ReleasePath
+from stock_risk.domain.lifecycle.params import Confirm, EngineParams, ReleaseHyst, ReleasePath
+from stock_risk.domain.lifecycle.start_paths import full_alert
+from stock_risk.domain.numeric import Kind, lt
 
 
 def check_invariants(results: Sequence[StepResult], params: EngineParams) -> list[str]:
@@ -102,5 +105,30 @@ def check_invariants(results: Sequence[StepResult], params: EngineParams) -> lis
                 for key in ("rc_cand", "xc_cand", "dc_cand"):
                     if key in e.basis and e.basis[key] != getattr(rec, key):
                         out.append(f"{day} 不变量9：RELEASE 依据 {key} 与候选计数不同")
+        out += _v08_invariants(r, params)
         prev = rec
+    return out
+
+
+def _v08_invariants(r: StepResult, params: EngineParams) -> list[str]:
+    """⑩ t11_full = ON 时，每次进入警戒当日完整警戒条件成立；
+    ⑪ release_hyst = EFFECTIVE 时，启动当日 a′ 不成立（10 号第 1A.4、1A.5 节）。"""
+    out: list[str] = []
+    rec, sw = r.record, params.switches
+    types = {e.type for e in r.events}
+    entering = EventType.ESCALATE in types or (
+        EventType.START in types and rec.level is Level.ALERT
+    )
+    ok = rec.d_ep is not None and rec.dd_ep is not None and full_alert(rec.d_ep, rec.dd_ep, params)
+    if sw.t11_full and entering and not ok:
+        out.append(f"{rec.day} 不变量10：进入警戒当日完整警戒条件不成立")
+    if sw.release_hyst is ReleaseHyst.EFFECTIVE and EventType.START in types:
+        assert rec.p_ep is not None and rec.atr_ep is not None and rec.delta_start is not None
+        if rec.entry_path == "L":
+            e_entry = sw.x_long * rec.p_ep
+        else:
+            e_entry = max(params.candidate.k1 * rec.atr_ep, sw.x1 * rec.p_ep)
+        th = min(e_entry, rec.delta_start)
+        if lt(rec.delta_start, params.assumptions.h * th, Kind.PRICE, params.tol):
+            out.append(f"{rec.day} 不变量11：启动当日 a′ 已成立")
     return out

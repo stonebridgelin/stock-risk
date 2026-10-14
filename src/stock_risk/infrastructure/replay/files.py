@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import csv
 import html
+import io
 import json
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -91,6 +92,24 @@ class ReplayFileSink:
             _read_csv(d / "episodes.csv"),
             read_chart_events(d / "chart.html"),
         )
+
+    def format_rows(
+        self, columns: Sequence[str], rows: Sequence[Mapping[str, Any]]
+    ) -> list[dict[str, str]]:
+        """按写 CSV 时的同一规则格式化后、经过 CSV 往返的结果（V0 回归比较用）。"""
+        buf = io.StringIO()
+        w = csv.DictWriter(buf, fieldnames=list(columns), extrasaction="ignore")
+        w.writeheader()
+        w.writerows({k: _fmt(r.get(k, "")) for k in columns} for r in rows)
+        buf.seek(0)
+        return list(csv.DictReader(buf))
+
+    def read_tables(
+        self, run_dir: Path, candidate_id: int, label: str
+    ) -> dict[str, list[dict[str, str]]]:
+        """读取某次运行中一个（候选, 对象）的 events、daily、episodes。"""
+        d = self.target_dir(run_dir, candidate_id, label)
+        return {name: _read_csv(d / f"{name}.csv") for name in ("events", "daily", "episodes")}
 
     def write_summary(
         self, run_dir: Path, rows: Sequence[Mapping[str, Any]], by_candidate: Sequence[Mapping]
