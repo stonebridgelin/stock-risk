@@ -35,7 +35,7 @@ def build_fetch_raw_data_service(settings: Settings) -> FetchRawDataService:
     if not settings.tiingo_api_key:
         raise SystemExit("未配置 TIINGO_API_KEY（项目根目录 .env 或环境变量）")
     return FetchRawDataService(
-        source=TiingoPriceSource(settings.tiingo_api_key),
+        source=TiingoPriceSource(settings.tiingo_api_key.reveal()),
         universe=CsvUniverseProvider(settings.exploration_universe_file),
         repository=CsvRawDataRepository(settings.raw_data_dir),
         segments=CsvSegmentProvider(settings.symbol_segments_file),

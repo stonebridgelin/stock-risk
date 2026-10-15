@@ -11,8 +11,41 @@ def test_settings_reads_env_file_and_env_overrides(tmp_path: Path, monkeypatch) 
     monkeypatch.delenv("TIINGO_API_KEY", raising=False)
     monkeypatch.setenv("FRED_API_KEY", "env")
     s = load_settings(tmp_path)
-    assert s.tiingo_api_key == "abc" and s.fred_api_key == "env"
+    assert s.tiingo_api_key.reveal() == "abc" and s.fred_api_key.reveal() == "env"
     assert "abc" not in repr(s)
+
+
+def test_secret_never_leaks(tmp_path: Path, monkeypatch) -> None:
+    """D-05：repr、str、格式化、asdict、json 都不泄露密钥（测试值为虚构字符串）。"""
+    import json
+    import pickle
+    from dataclasses import asdict
+
+    from stock_risk.config.settings import Secret
+
+    for key in ("TIINGO_API_KEY", "FRED_API_KEY", "MYSQL_VERIFY_URL"):
+        monkeypatch.setenv(key, f"fake-{key.lower()}-value")
+    s = load_settings(tmp_path)
+    secrets = [f"fake-{k}-value" for k in ("tiingo_api_key", "fred_api_key", "mysql_verify_url")]
+    d = asdict(s)
+    texts = [
+        repr(s),
+        str(s),
+        repr(d),
+        str(d),
+        f"{s.tiingo_api_key}",
+        f"{s.fred_api_key:>10}",
+        json.dumps(d, default=str),
+    ]
+    for text in texts:
+        assert not any(x in text for x in secrets), text
+    assert d["tiingo_api_key"] == s.tiingo_api_key and str(d["tiingo_api_key"]) == "***"
+    assert json.dumps({"k": Secret("fake")}, default=str) == '{"k": "***"}'
+    with pytest.raises(TypeError):
+        json.dumps({"k": Secret("fake")})  # 不能直接序列化，不会写出明文
+    with pytest.raises(TypeError):
+        pickle.dumps(Secret("fake"))
+    assert bool(Secret("")) is False and bool(Secret("x")) is True
 
 
 def test_exploration_universe_file_is_valid() -> None:

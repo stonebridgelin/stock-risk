@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
@@ -25,12 +26,55 @@ def _parse_env_file(path: Path) -> dict[str, str]:
     return values
 
 
+class Secret:
+    """密钥（T08a D-05）：repr、str、格式化与 dataclasses.asdict 后的副本都只显示 ***。
+
+    取值只能显式调用 reveal()。json 不能直接序列化本类型（报 TypeError，不会写出明文）；
+    以 default=str 序列化时写出 ***。
+    """
+
+    __slots__ = ("_value",)
+    MASK = "***"
+
+    def __init__(self, value: str) -> None:
+        self._value = value
+
+    def reveal(self) -> str:
+        return self._value
+
+    def __bool__(self) -> bool:
+        return bool(self._value)
+
+    def __repr__(self) -> str:
+        return self.MASK
+
+    __str__ = __repr__
+
+    def __format__(self, spec: str) -> str:
+        return self.MASK
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, Secret) and other._value == self._value
+
+    def __hash__(self) -> int:
+        return hash((Secret, self._value))
+
+    def __reduce__(self) -> tuple[Any, ...]:
+        raise TypeError("密钥不得被序列化")
+
+    def __deepcopy__(self, memo: dict[int, Any]) -> Secret:
+        return self
+
+    def __copy__(self) -> Secret:
+        return self
+
+
 @dataclass(frozen=True)
 class Settings:
     project_root: Path
-    tiingo_api_key: str = field(repr=False)
-    fred_api_key: str = field(repr=False)
-    mysql_verify_url: str = field(repr=False)
+    tiingo_api_key: Secret = field(repr=False)
+    fred_api_key: Secret = field(repr=False)
+    mysql_verify_url: Secret = field(repr=False)
 
     @property
     def raw_data_dir(self) -> Path:
@@ -81,7 +125,7 @@ def load_settings(project_root: Path = PROJECT_ROOT) -> Settings:
 
     return Settings(
         project_root=project_root,
-        tiingo_api_key=get("TIINGO_API_KEY"),
-        fred_api_key=get("FRED_API_KEY"),
-        mysql_verify_url=get("MYSQL_VERIFY_URL"),
+        tiingo_api_key=Secret(get("TIINGO_API_KEY")),
+        fred_api_key=Secret(get("FRED_API_KEY")),
+        mysql_verify_url=Secret(get("MYSQL_VERIFY_URL")),
     )
