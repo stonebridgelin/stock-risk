@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from datetime import date
 
 from stock_risk.domain.market_data import DailyBar, PriceHistory
+from stock_risk.domain.seal import assert_dates_not_sealed
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,6 +35,8 @@ class ListingPeriod:
             raise ValueError(f"{self.symbol}: 上市起始日晚于退市日")
         if self.is_bounded and not self.source_url:
             raise ValueError(f"{self.symbol}: 登记了上市期间日期但没有来源链接")
+        # verified_on 是核对日期，不是行情日期，不检查
+        assert_dates_not_sealed(f"{self.symbol} 上市期间", self.listed_from, self.listed_until)
 
     @property
     def is_bounded(self) -> bool:

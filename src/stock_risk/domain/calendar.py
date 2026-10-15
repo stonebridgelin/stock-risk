@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from datetime import date
 
 from stock_risk.domain.numeric import InvalidInputError
+from stock_risk.domain.seal import assert_dates_not_sealed
 
 
 @dataclass(frozen=True, slots=True)
@@ -24,6 +25,7 @@ class TradingCalendar:
             raise InvalidInputError("交易日历为空")
         if any(a >= b for a, b in zip(self.days, self.days[1:], strict=False)):
             raise InvalidInputError("交易日历未严格升序（重复或乱序）")
+        assert_dates_not_sealed("交易日历", self.days[-1])  # 升序，只需检查最后一日
 
     @classmethod
     def from_days(cls, days: Iterable[date]) -> TradingCalendar:

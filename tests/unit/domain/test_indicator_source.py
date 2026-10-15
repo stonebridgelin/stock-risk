@@ -132,7 +132,8 @@ def test_range_max_window_matches_scan_with_ties() -> None:
     from stock_risk.domain import indicators as ind
 
     rng = random.Random(3)
-    days = [D0 + timedelta(days=i) for i in range(400) if (D0 + timedelta(days=i)).weekday() < 5]
+    d0 = date(2018, 3, 5)  # 周一；400 个日历日内结束于 2019 年（日历构造时检查封存，T08a D-02）
+    days = [d0 + timedelta(days=i) for i in range(400) if (d0 + timedelta(days=i)).weekday() < 5]
     closes = [float(rng.choice([95, 96, 97, 98, 99, 100])) for _ in days]
     bars = [
         DailyBar(d, c, c + 1, c - 1, c, 1, c, c + 1, c - 1, c)

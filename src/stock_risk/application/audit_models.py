@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date
 
-from stock_risk.domain.audit import AdjFactorJump, ExplicitFailure, ManifestMismatch
+from stock_risk.domain.audit import AdjFactorJump, ExplicitFailure, ManifestMismatch, ManifestStatus
 from stock_risk.domain.corrections import PriceCorrection
 from stock_risk.domain.listing import ListingPeriod
 from stock_risk.domain.segments import JunctionCheck
@@ -51,3 +51,23 @@ class AuditReport:
     @property
     def total_sealed_rows(self) -> int:
         return sum(s.sealed_rows for s in self.symbols)
+
+    @property
+    def blocking_problems(self) -> list[str]:
+        """使 audit-raw 返回非零退出码的问题（T08a D-02）：明确失败、封存越界、
+        MANIFEST 哈希不符或文件缺失、研究样本中有而 data/raw 中没有的代码。空表示通过。"""
+        out: list[str] = []
+        if self.total_failures:
+            out.append(f"明确失败 {self.total_failures} 项")
+        if self.total_sealed_rows:
+            out.append(f"封存越界 {self.total_sealed_rows} 行")
+        for kind, label in (
+            (ManifestStatus.HASH_MISMATCH, "MANIFEST 哈希不符"),
+            (ManifestStatus.FILE_MISSING, "MANIFEST 中有而文件缺失"),
+        ):
+            files = [m.file for m in self.manifest_mismatches if m.status is kind]
+            if files:
+                out.append(f"{label} {len(files)} 个：{', '.join(files)}")
+        if self.missing:
+            out.append(f"缺少原始文件 {len(self.missing)} 个：{', '.join(self.missing)}")
+        return out

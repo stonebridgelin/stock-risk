@@ -51,7 +51,10 @@ def _cmd_audit_raw(args: argparse.Namespace) -> int:
     )
     for p in paths:
         print(f"  {p}")
-    return 0
+    problems = report.blocking_problems
+    for x in problems:
+        print(f"未通过：{x}")
+    return 1 if problems else 0
 
 
 def _cmd_check_calendar(args: argparse.Namespace) -> int:

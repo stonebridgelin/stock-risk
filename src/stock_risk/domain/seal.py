@@ -35,6 +35,13 @@ def assert_no_sealed_days(days: Iterable[date], what: str) -> None:
             raise SealViolation(f"{what} 中出现晚于 {EXPLORATION_END} 的行")
 
 
+def assert_dates_not_sealed(what: str, *days: date | None) -> None:
+    """配置与参照对象构造时的检查（T08a D-02）：给出的日期不得晚于探索期截止日。"""
+    for d in days:
+        if d is not None and d > EXPLORATION_END:
+            raise SealViolation(f"{what} 的日期 {d} 晚于 {EXPLORATION_END}")
+
+
 def assert_sealed(history: PriceHistory) -> None:
     """写盘前最后一道检查：仍有验证期数据则直接报错。"""
     last = history.last_day

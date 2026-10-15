@@ -14,6 +14,7 @@ from enum import StrEnum
 
 from stock_risk.domain.listing import ListingPeriod
 from stock_risk.domain.market_data import DailyBar, PriceHistory
+from stock_risk.domain.seal import assert_dates_not_sealed
 
 
 class CorrectionError(ValueError):
@@ -51,6 +52,7 @@ class PriceCorrection:
             raise CorrectionError(f"{self.symbol}: 未知的更正方法 {self.method!r}")
         if not self.ruling or not self.evidence:
             raise CorrectionError(f"{self.symbol}: 更正必须有裁定编号与数据依据")
+        assert_dates_not_sealed(f"{self.symbol} 更正", self.start, self.end)
 
     def contains(self, day: date) -> bool:
         return self.start <= day <= self.end

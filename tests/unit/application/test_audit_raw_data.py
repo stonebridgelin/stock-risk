@@ -95,6 +95,12 @@ def test_audit_end_to_end(tmp_path: Path) -> None:
         "VRX.csv": "not_in_manifest",
         "SHLD.csv": "not_in_manifest",
     }
+    # D-02：明确失败、哈希不符、缺少原始文件使 audit-raw 返回非零；不在清单中的文件不算
+    assert report.blocking_problems == [
+        "明确失败 1 项",
+        "MANIFEST 哈希不符 1 个：SPY.csv",
+        "缺少原始文件 1 个：GONE",
+    ]
 
     out = tmp_path / "audit" / "2026-10-13"
     assert {p.name for p in paths} >= {"summary.md", "explicit_failures.csv", "junctions.csv"}
@@ -129,3 +135,11 @@ def test_history_type_is_price_history(tmp_path: Path) -> None:
     write_raw(raw, "X", [row(date(2019, 1, 2))])
     assert isinstance(CsvRawDataReader(raw).load("X").history, PriceHistory)
     assert isinstance(CsvRawDataReader(raw).load("X").history.bars[0], DailyBar)
+
+
+def test_blocking_problems_empty_when_clean() -> None:
+    from datetime import date
+
+    from stock_risk.application.audit_models import AuditReport
+
+    assert AuditReport(date(2026, 10, 13), None, "SPY", None, None, 0.1).blocking_problems == []

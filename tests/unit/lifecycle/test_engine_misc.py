@@ -173,11 +173,12 @@ def test_censor_without_open_episode_is_noop() -> None:
 
 
 def test_engine_cost_independent_of_history_length() -> None:
-    """约 11 年日线（2800 天）单个候选的运行时间应很短（每日工作量与历史长度无关）。"""
+    """约 10.7 年日线（2790 天，止于 2019 年）单个候选的运行时间应很短
+    （每日工作量与历史长度无关）。"""
     p = params(confirm=Confirm.BOX_ROLL, release=ReleasePath.DIRECT, basis=AtrBasis.MIN)
     rng = random.Random(7)
     closes, c = [], 100.0
-    for _ in range(2800):
+    for _ in range(2700):
         c = max(5.0, c * (1 + rng.gauss(0, 0.02)))
         closes.append(round(c, 2))
     bars = f_bars(closes)

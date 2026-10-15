@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from datetime import date
 
 from stock_risk.domain.market_data import DailyBar, PriceHistory
+from stock_risk.domain.seal import assert_dates_not_sealed
 
 
 class SegmentError(ValueError):
@@ -32,6 +33,7 @@ class SymbolSegment:
             raise SegmentError("分段的 symbol 与 source_ticker 不能为空")
         if self.start is not None and self.end is not None and self.start > self.end:
             raise SegmentError(f"{self.symbol}/{self.source_ticker}: 起始日晚于结束日")
+        assert_dates_not_sealed(f"{self.symbol}/{self.source_ticker} 分段", self.start, self.end)
 
     def contains(self, day: date) -> bool:
         return (self.start is None or day >= self.start) and (self.end is None or day <= self.end)
