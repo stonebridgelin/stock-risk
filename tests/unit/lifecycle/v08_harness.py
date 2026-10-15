@@ -64,6 +64,7 @@ class Prior:
     obs_n: int = 0
     prev_confirm: bool = False
     cycle_no: int = 1
+    box_high: float | None = None  # confirm = BOX 且 since_obs ≥ K 时必须给出（T08a B-02）
 
 
 @dataclass
@@ -127,6 +128,7 @@ def run_table(
             obs_start=pre,
             cycle_no=prior.cycle_no,
             since_obs=prior.since_obs,
+            box_high=prior.box_high,
             downgraded=prior.downgraded,
             h_d=prior.h_d,
             stabilized=prior.stabilized,
@@ -151,7 +153,7 @@ def prior_fields(prior: Prior) -> dict[str, Any]:
         "level": "A" if prior.level is Level.ALERT else "W",
         "cycle_no": prior.cycle_no,
         "obs_start": START_DAY,
-        "box_high": None,
+        "box_high": prior.box_high,
         "h_d": prior.h_d,
         "downgraded": prior.downgraded,
         "obs_issued": prior.obs_n > 0,
@@ -176,8 +178,13 @@ def decimal_bars(after_peak: list[Decimal]) -> list[DailyBar]:
     return bars
 
 
-def f_run_decimal(prefix: str, after_peak: list[Decimal], p: EngineParams) -> Run:
+def f_run_decimal(
+    prefix: str, after_peak: list[Decimal], p: EngineParams, upto: int | None = None
+) -> Run:
+    """upto：只回放到第 upto 根日线（I17 ① 无前视检查）。"""
     bars = decimal_bars(after_peak)
+    if upto is not None:
+        bars = bars[: upto + 1]
     cal = TradingCalendar.from_days(b.day for b in bars)
     presence = [DayPresence(b.day, True) for b in bars]
     result = run_bars(SYMBOL, cal, presence, bars, p, replay_start=bars[0].day)

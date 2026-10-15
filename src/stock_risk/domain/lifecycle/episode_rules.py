@@ -66,7 +66,11 @@ def confirmation(
             raise InvalidInputError(f"{day}: 企稳日缺少 SMA{params.fixed.sma_len}")
         return stable and line is not None and gt(close, line, Kind.PRICE, tol), line
     line = ep.box_high if method is Confirm.BOX else src.max_close_prior(day, k)
-    return ep.since_obs > k and line is not None and gt(close, line, Kind.PRICE, tol), line
+    if ep.since_obs <= k:
+        return False, line
+    if line is None:  # T08a B-02：应有确认线时缺线，不得静默视为不成立
+        raise InvalidInputError(f"{day}: {method.value} 的确认线缺失（since_obs = {ep.since_obs}）")
+    return gt(close, line, Kind.PRICE, tol), line
 
 
 def theta(ep: Episode, params: EngineParams) -> float | None:
