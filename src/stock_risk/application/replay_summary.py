@@ -22,7 +22,7 @@ from datetime import date
 from typing import Any
 
 from stock_risk.application.replay import SymbolReplay
-from stock_risk.application.replay_outputs import EpisodeRow
+from stock_risk.application.replay_episodes import EpisodeRow
 from stock_risk.domain.lifecycle.model import DataStatus, EndReason, EventType
 from stock_risk.domain.lifecycle.restart import EpisodeSpan, bar_days, restart_gaps
 
@@ -56,8 +56,20 @@ def _in_period(d: date | None) -> bool:
     return d is not None and SUMMARY_START <= d <= SUMMARY_END
 
 
+COUNTED_EVENTS = (
+    EventType.START,
+    EventType.ESCALATE,
+    EventType.DOWNGRADE,
+    EventType.RELEASE,
+    EventType.STABILIZED,
+    EventType.RECOVERY_OBS,
+    EventType.RECOVERY_REVOKED,
+    EventType.RECOVERY_FAIL,
+    EventType.DATA_ISSUE,
+)
+
+
 def summarize(rep: SymbolReplay, episodes: Iterable[EpisodeRow]) -> dict[str, Any]:
-    results = rep.result.results
     row: dict[str, Any] = {
         "candidate_id": rep.candidate_id,
         "target": rep.target.label,
@@ -65,6 +77,21 @@ def summarize(rep: SymbolReplay, episodes: Iterable[EpisodeRow]) -> dict[str, An
         "variant": rep.target.variant,
     }
     eps = list(episodes)
+    row |= _episode_stats(eps)
+    row |= _day_stats(rep)
+    for kind in COUNTED_EVENTS:
+        row[f"n_{kind.value.lower()}"] = sum(
+            1 for e in rep.result.events if e.type is kind and _in_period(e.day)
+        )
+    gaps = _restart_gaps(rep, eps)
+    row |= describe(gaps, "restart_gap")
+    row["_restart_gaps"] = gaps
+    return row
+
+
+def _episode_stats(eps: list[EpisodeRow]) -> dict[str, Any]:
+    """开发期预警按终止原因分开；预热期启动的单列。"""
+    row: dict[str, Any] = {}
     dev = [e for e in eps if e.start_date >= SUMMARY_START]
     warm = [
         e
@@ -89,45 +116,36 @@ def summarize(rep: SymbolReplay, episodes: Iterable[EpisodeRow]) -> dict[str, An
     row["warmup_started_durations"] = ";".join(
         f"{e.duration_trading_days}{'' if e.end_reason is EndReason.RELEASE else '+'}" for e in warm
     )
+    return row
 
-    in_period = [r.record for r in results if _in_period(r.record.day)]
+
+def _day_stats(rep: SymbolReplay) -> dict[str, Any]:
+    """可计算日、占用率、缺价日、数据中断与不可计算日数（汇总期内）。"""
+    in_period = [r.record for r in rep.result.results if _in_period(r.record.day)]
     computable = [x for x in in_period if x.data_status is DataStatus.HAS_BAR and x.in_replay]
     warned = [x for x in computable if x.level is not None]
     missing = [x for x in in_period if x.data_status is DataStatus.MISSING]
-    row["computable_days"] = len(computable)
-    row["warning_days"] = len(warned)
-    row["occupancy"] = round(len(warned) / len(computable), 6) if computable else ""
-    row["missing_days"] = len(missing)
-    row["missing_days_frozen_warning"] = sum(1 for x in missing if x.level is not None)
-    row["data_break_days"] = sum(1 for x in in_period if x.data_status is DataStatus.DATA_BREAK)
-    row["insufficient_days"] = sum(1 for x in in_period if x.data_status is DataStatus.INSUFFICIENT)
+    return {
+        "computable_days": len(computable),
+        "warning_days": len(warned),
+        "occupancy": round(len(warned) / len(computable), 6) if computable else "",
+        "missing_days": len(missing),
+        "missing_days_frozen_warning": sum(1 for x in missing if x.level is not None),
+        "data_break_days": sum(1 for x in in_period if x.data_status is DataStatus.DATA_BREAK),
+        "insufficient_days": sum(1 for x in in_period if x.data_status is DataStatus.INSUFFICIENT),
+    }
 
-    for kind in (
-        EventType.START,
-        EventType.ESCALATE,
-        EventType.DOWNGRADE,
-        EventType.RELEASE,
-        EventType.STABILIZED,
-        EventType.RECOVERY_OBS,
-        EventType.RECOVERY_REVOKED,
-        EventType.RECOVERY_FAIL,
-        EventType.DATA_ISSUE,
-    ):
-        row[f"n_{kind.value.lower()}"] = sum(
-            1 for e in rep.result.events if e.type is kind and _in_period(e.day)
-        )
 
+def _restart_gaps(rep: SymbolReplay, eps: list[EpisodeRow]) -> list[int]:
+    """解除日在汇总期内的再次启动间隔（domain.lifecycle.restart，T08a C-06）。"""
     ordered_eps = sorted(eps, key=lambda e: e.start_date)
     spans = [EpisodeSpan(e.start_date, e.end_date, e.end_reason) for e in ordered_eps]
-    all_gaps = restart_gaps(spans, bar_days([r.record for r in results]))
-    gaps = [
+    all_gaps = restart_gaps(spans, bar_days([r.record for r in rep.result.results]))
+    return [
         g
         for prev, g in zip(ordered_eps, all_gaps[1:], strict=False)
         if g is not None and _in_period(prev.end_date)
     ]
-    row |= describe(gaps, "restart_gap")
-    row["_restart_gaps"] = gaps
-    return row
 
 
 def summarize_candidates(rows: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:

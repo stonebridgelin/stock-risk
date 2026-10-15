@@ -1,4 +1,4 @@
-"""运行环境信息（实现 application.replay_run.RunEnvironment）：git 提交号与工作区状态、文件哈希、
+"""运行环境信息（实现 application.run_manifest.RunEnvironment）：git 提交号与工作区状态、文件哈希、
 版本。
 
 git 可执行文件：环境变量 GIT_EXECUTABLE 优先，否则在 PATH 中查找。找不到 git 时视为工作区状态未知，
@@ -15,7 +15,7 @@ import subprocess
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
-from stock_risk.application.replay_run import GitState
+from stock_risk.application.run_manifest import GitState
 
 PACKAGES = ("stock-risk", "plotly", "exchange-calendars")
 

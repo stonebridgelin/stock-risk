@@ -15,10 +15,10 @@ import os
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import asdict, dataclass, field
-from datetime import datetime
-from pathlib import Path
-from typing import Any, Protocol
+from datetime import date, datetime
+from typing import Any
 
+from stock_risk.application.progress import ProgressFn, quiet
 from stock_risk.application.replay import (
     PreparedSymbol,
     ReplayService,
@@ -26,13 +26,14 @@ from stock_risk.application.replay import (
     SymbolReplay,
     replay_prepared,
 )
-from stock_risk.application.replay_chart_data import ChartData, build_chart_data, drawdown_63
-from stock_risk.application.replay_outputs import (
-    check_consistency,
-    daily_rows,
-    episode_csv_rows,
-    episode_rows,
-    event_rows,
+from stock_risk.application.replay_chart_data import build_chart_data, drawdown_63
+from stock_risk.application.replay_consistency import check_consistency
+from stock_risk.application.replay_episodes import episode_csv_rows, episode_rows
+from stock_risk.application.replay_outputs import daily_rows, event_rows
+from stock_risk.application.replay_run_types import (
+    ReplayOutputSink,
+    RunReport,
+    discrete_digest,
 )
 from stock_risk.application.replay_summary import (
     SUMMARY_END,
@@ -40,112 +41,39 @@ from stock_risk.application.replay_summary import (
     summarize,
     summarize_candidates,
 )
+from stock_risk.application.run_manifest import (
+    GitState,
+    RunEnvironment,
+    RunStart,
+    base_manifest,
+    finish_manifest,
+    make_run_id,
+    start_run,
+)
 from stock_risk.domain.calendar import TradingCalendar
 from stock_risk.domain.lifecycle.invariants import check_invariants
 from stock_risk.domain.lifecycle.params import (
     EXPLORATION_ASSUMPTIONS,
-    FIXED,
     Candidate,
     EngineParams,
     candidate_grid,
     reference_candidates,
 )
-from stock_risk.domain.lifecycle.runner import RunResult
-from stock_risk.domain.numeric import DEFAULT_TOLERANCES
 
 BACKGROUND_SYMBOLS = ("SPY", "QQQ")
 I17_CANDIDATES = (1, 385, 768)
 I17_SYMBOLS = ("AAPL", "NFLX", "VRX", "GE", "SHLD_corrected")
-ProgressFn = Callable[[str], None]
-
-
-@dataclass(frozen=True, slots=True)
-class GitState:
-    commit: str | None
-    dirty: bool
-    changed: tuple[str, ...]
-    error: str | None
-
-
-class RunEnvironment(Protocol):
-    def git_state(self) -> GitState: ...
-
-    def file_hashes(self) -> dict[str, dict[str, str | None]]: ...
-
-    def versions(self) -> dict[str, str]: ...
-
-
-class ReplayOutputSink(Protocol):
-    def create_run_dir(self, run_id: str) -> Path: ...
-
-    def run_dir_exists(self, run_id: str) -> bool: ...
-
-    def write_target(
-        self,
-        run_dir: Path,
-        candidate_id: int,
-        label: str,
-        events: Sequence[Mapping[str, Any]],
-        daily: Sequence[Mapping[str, Any]],
-        episodes: Sequence[Mapping[str, Any]],
-        chart: ChartData,
-    ) -> Path: ...
-
-    def read_target(
-        self, run_dir: Path, candidate_id: int, label: str
-    ) -> tuple[
-        list[dict[str, str]], list[dict[str, str]], list[dict[str, str]], list[tuple[str, str]]
-    ]: ...
-
-    def write_summary(
-        self,
-        run_dir: Path,
-        rows: Sequence[Mapping[str, Any]],
-        by_candidate: Sequence[Mapping[str, Any]],
-    ) -> list[Path]: ...
-
-    def write_manifest(self, run_dir: Path, manifest: Mapping[str, Any]) -> Path: ...
-
-    def write_index(
-        self, run_dir: Path, run_id: str, run_kind: str, cells: Sequence[Mapping[str, Any]]
-    ) -> Path: ...
-
-
-@dataclass(slots=True)
-class RunReport:
-    run_id: str
-    run_kind: str
-    run_dir: Path
-    manifest: dict[str, Any] = field(default_factory=dict)
-
-    @property
-    def ok(self) -> bool:
-        m = self.manifest
-        return (
-            not m.get("failed")
-            and m.get("invariant_violations", 0) == 0
-            and not m.get("consistency_problems")
-            and m.get("i17_ok", True)
-        )
-
-
-def make_run_id(started: datetime, commit: str | None) -> str:
-    return f"{started:%Y%m%dT%H%M%S}-{(commit or 'nogit')[:7]}"
-
-
-def discrete_digest(result: RunResult) -> tuple:
-    """离散结果：每日显示状态、等级、预警编号、周期与当日事件的业务身份（I17 ②）。"""
-    return tuple(
-        (
-            r.record.day,
-            r.record.display.value,
-            r.record.level,
-            r.record.episode_id,
-            r.record.cycle_no,
-            tuple(sorted(str(e.key) for e in r.events)),
-        )
-        for r in result.results
-    )
+# GitState、RunEnvironment、make_run_id 定义在 run_manifest，这里转出供原有调用方使用
+__all__ = [
+    "GitState",
+    "ProgressFn",
+    "ReplayRunService",
+    "ReplayOutputSink",
+    "RunEnvironment",
+    "RunReport",
+    "discrete_digest",
+    "make_run_id",
+]
 
 
 def _summarize_target(
@@ -181,13 +109,38 @@ def _summarize_target(
     }
 
 
+@dataclass(slots=True)
+class _ReferenceAcc:
+    rows: list[dict[str, Any]] = field(default_factory=list)
+    cells: list[dict[str, Any]] = field(default_factory=list)
+    problems: list[str] = field(default_factory=list)
+    violations: list[str] = field(default_factory=list)
+    completed: list[int] = field(default_factory=list)
+
+
+def _report(run: RunStart, manifest: dict[str, Any]) -> RunReport:
+    return RunReport(run.run_id, run.run_kind, run.run_dir, manifest)
+
+
+def _target_record(p: PreparedSymbol) -> dict[str, Any]:
+    return {
+        "label": p.target.label,
+        "symbol": p.target.symbol,
+        "variant": p.target.variant,
+        "replay_start": p.data.ranges.replay_start.isoformat(),
+        "observation_end": p.data.ranges.observation_end.isoformat(),
+        "right_end": p.data.ranges.right_end.value,
+        "left_end": p.data.ranges.left_end.value,
+    }
+
+
 class ReplayRunService:
     def __init__(
         self,
         replay: ReplayService,
         sink: ReplayOutputSink,
         env: RunEnvironment,
-        progress: ProgressFn = print,
+        progress: ProgressFn = quiet,
     ) -> None:
         self._replay = replay
         self._sink = sink
@@ -197,59 +150,21 @@ class ReplayRunService:
     def _start(
         self, started: datetime, mode: str, symbols: Sequence[str] | None
     ) -> tuple[RunReport, list[PreparedSymbol]]:
-        git = self._env.git_state()
-        run_kind = "formal" if (git.commit and not git.dirty) else "debug"
-        run_id = make_run_id(started, git.commit)
-        n = 2
-        while self._sink.run_dir_exists(run_id):
-            run_id = f"{make_run_id(started, git.commit)}-{n}"
-            n += 1
-        run_dir = self._sink.create_run_dir(run_id)
+        run = start_run(self._sink, self._env, started)
         g = EXPLORATION_ASSUMPTIONS.gap_break
-        targets = self._replay.targets(symbols)
-        prepared = [self._replay.prepare(t, g) for t in targets]
-        manifest: dict[str, Any] = {
-            "run_id": run_id,
-            "run_kind": run_kind,
-            "mode": mode,
-            "git": asdict(git),
-            "started_at": started.isoformat(),
-            "documents_and_config": self._env.file_hashes(),
-            "versions": self._env.versions(),
-            "parameters": {
-                "fixed_values": asdict(FIXED),
-                "exploration_assumptions_I6a": {
-                    **asdict(EXPLORATION_ASSUMPTIONS),
-                    "note": "探索假设，非发起人批准值",
-                },
-                "numeric_tolerances_I6b": {**asdict(DEFAULT_TOLERANCES), "note": "待登记"},
-            },
-            "calendar": {
-                "source": "SPY 日历代理（I1），data/raw/SPY.csv",
-                "sha256": self._env.file_hashes()["calendar_spy"]["sha256"],
-            },
-            "summary_period": [SUMMARY_START.isoformat(), SUMMARY_END.isoformat()],
-            "targets": [
-                {
-                    "label": p.target.label,
-                    "symbol": p.target.symbol,
-                    "variant": p.target.variant,
-                    "replay_start": p.data.ranges.replay_start.isoformat(),
-                    "observation_end": p.data.ranges.observation_end.isoformat(),
-                    "right_end": p.data.ranges.right_end.value,
-                    "left_end": p.data.ranges.left_end.value,
-                }
-                for p in prepared
-            ],
+        prepared = [self._replay.prepare(t, g) for t in self._replay.targets(symbols)]
+        manifest = base_manifest(run, self._env, mode, started)
+        manifest["calendar"] = {
+            "source": "SPY 日历代理（I1），data/raw/SPY.csv",
+            "sha256": self._env.file_hashes()["calendar_spy"]["sha256"],
         }
-        self._progress(f"run_id = {run_id}（{run_kind}），{len(prepared)} 个回放对象")
-        return RunReport(run_id, run_kind, run_dir, manifest), prepared
+        manifest["summary_period"] = [SUMMARY_START.isoformat(), SUMMARY_END.isoformat()]
+        manifest["targets"] = [_target_record(p) for p in prepared]
+        self._progress(f"run_id = {run.run_id}（{run.run_kind}），{len(prepared)} 个回放对象")
+        return _report(run, manifest), prepared
 
     def _finish(self, report: RunReport, finished: datetime) -> RunReport:
-        report.manifest["finished_at"] = finished.isoformat()
-        started = datetime.fromisoformat(report.manifest["started_at"])
-        report.manifest["elapsed_seconds"] = round((finished - started).total_seconds(), 1)
-        self._sink.write_manifest(report.run_dir, report.manifest)
+        self._sink.write_manifest(report.run_dir, finish_manifest(report.manifest, finished))
         return report
 
     # ---- T04b ----
@@ -263,42 +178,16 @@ class ReplayRunService:
         background = {
             s: drawdown_63(self._replay.loader.load(s).history.bars) for s in BACKGROUND_SYMBOLS
         }
-        rows, cells, problems, violations, completed = [], [], [], [], []
+        acc = _ReferenceAcc()
         for cid, cand in cands:
             params = EngineParams(cand, EXPLORATION_ASSUMPTIONS)
             label = f"{cand.confirm}/{cand.release_path}/{cand.atr_basis}"
             for p in prepared:
-                result = replay_prepared(p, params, calendar)
-                rep = SymbolReplay(p.target, cid, params, p, result)
-                violations += [
-                    f"c{cid:03d}/{p.target.label}: {v}"
-                    for v in check_invariants(result.results, params)
-                ]
-                eps = episode_rows(rep)
-                ev, dy = event_rows(rep, report.run_id), daily_rows(rep, report.run_id)
-                ep = episode_csv_rows(rep, report.run_id, eps)
-                self._sink.write_target(
-                    report.run_dir,
-                    cid,
-                    p.target.label,
-                    ev,
-                    dy,
-                    ep,
-                    build_chart_data(rep, report.run_id, background),
-                )
-                back = self._sink.read_target(report.run_dir, cid, p.target.label)
-                problems += [f"c{cid:03d}/{p.target.label}: {x}" for x in check_consistency(*back)]
-                rows.append(summarize(rep, eps))
-                cells.append(
-                    {
-                        "target": p.target.label,
-                        "candidate_id": cid,
-                        "label": label,
-                        "episodes": len(eps),
-                    }
-                )
-            completed.append(cid)
+                self._reference_target(report, p, cid, params, label, calendar, background, acc)
+            acc.completed.append(cid)
             self._progress(f"  候选 {cid} 完成")
+        rows, cells, problems, violations = acc.rows, acc.cells, acc.problems, acc.violations
+        completed = acc.completed
         self._sink.write_summary(report.run_dir, rows, summarize_candidates(rows))
         self._sink.write_index(report.run_dir, report.run_id, report.run_kind, cells)
         report.manifest.update(
@@ -310,6 +199,34 @@ class ReplayRunService:
             consistency_problem_count=len(problems),
         )
         return self._finish(report, clock())
+
+    def _reference_target(
+        self,
+        report: RunReport,
+        p: PreparedSymbol,
+        cid: int,
+        params: EngineParams,
+        label: str,
+        calendar: TradingCalendar,
+        background: dict[str, dict[date, float]],
+        acc: _ReferenceAcc,
+    ) -> None:
+        """一个（候选, 对象）：回放、写出四种输出、读回做一致性检查、汇总。"""
+        result = replay_prepared(p, params, calendar)
+        rep = SymbolReplay(p.target, cid, params, p, result)
+        where = f"c{cid:03d}/{p.target.label}"
+        acc.violations += [f"{where}: {v}" for v in check_invariants(result.results, params)]
+        eps = episode_rows(rep)
+        ev, dy = event_rows(rep, report.run_id), daily_rows(rep, report.run_id)
+        ep = episode_csv_rows(rep, report.run_id, eps)
+        chart = build_chart_data(rep, report.run_id, background)
+        self._sink.write_target(report.run_dir, cid, p.target.label, ev, dy, ep, chart)
+        back = self._sink.read_target(report.run_dir, cid, p.target.label)
+        acc.problems += [f"{where}: {x}" for x in check_consistency(*back)]
+        acc.rows.append(summarize(rep, eps))
+        acc.cells.append(
+            {"target": p.target.label, "candidate_id": cid, "label": label, "episodes": len(eps)}
+        )
 
     # ---- T04c ----
     def run_all(

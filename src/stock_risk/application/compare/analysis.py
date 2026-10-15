@@ -129,14 +129,11 @@ def _enters_alert(e: Event, i: int) -> bool:
 def event_compare(base: RunView, new: RunView) -> list[dict[str, Any]]:
     ov = overlaps(base, new)
     rows: list[dict[str, Any]] = []
+    kinds = (EventType.START, EventType.ESCALATE, EventType.RELEASE)
     for src, other, direction, side in ((base, new, "V0→新", 0), (new, base, "新→V0", 1)):
         for e in src.events:
             i = src.index[e.day]
-            if not src.in_period(i) or e.type not in (
-                EventType.START,
-                EventType.ESCALATE,
-                EventType.RELEASE,
-            ):
+            if not src.in_period(i) or e.type not in kinds:
                 continue
             if e.type is EventType.ESCALATE and direction != "V0→新":
                 continue
@@ -166,21 +163,33 @@ def event_compare(base: RunView, new: RunView) -> list[dict[str, Any]]:
                 else:
                     tags.append("对方当日为警戒")
             else:  # RELEASE
-                partner = unique_partner(ov, e.identity[0], side)
-                if partner is None:
-                    tags.append("多对多" if any(k[side] == e.identity[0] for k in ov) else "无重叠")
-                else:
-                    row["partner_episode_id"] = partner
-                    p_end = next((x for x in other.episodes if x.episode_id == partner), None)
-                    if p_end is not None and p_end.end_reason is not None and p_end.end_date:
-                        row["partner_end_date"] = p_end.end_date.isoformat()
-                        row["partner_end_reason"] = p_end.end_reason.value
-                        if p_end.end_reason.value == "RELEASE":
-                            diff = _valid_between(src, e.day, p_end.end_date)
-                            row["release_day_diff"] = diff  # 对方解除日 − 本方解除日（有效交易日）
+                tags += _release_partner(src, other, ov, e, side, row)
             row["tags"] = ";".join(tags)
             rows.append(row)
     return rows
+
+
+def _release_partner(
+    src: RunView,
+    other: RunView,
+    ov: dict[tuple[str, str], list[int]],
+    e: Event,
+    side: int,
+    row: dict[str, Any],
+) -> list[str]:
+    """解除事件：找唯一的重叠对方预警，记录其终止日与原因、两侧解除日之差。返回标签。"""
+    partner = unique_partner(ov, e.identity[0], side)
+    if partner is None:
+        return ["多对多" if any(k[side] == e.identity[0] for k in ov) else "无重叠"]
+    row["partner_episode_id"] = partner
+    p_end = next((x for x in other.episodes if x.episode_id == partner), None)
+    if p_end is not None and p_end.end_reason is not None and p_end.end_date:
+        row["partner_end_date"] = p_end.end_date.isoformat()
+        row["partner_end_reason"] = p_end.end_reason.value
+        if p_end.end_reason.value == "RELEASE":
+            diff = _valid_between(src, e.day, p_end.end_date)
+            row["release_day_diff"] = diff  # 对方解除日 − 本方解除日（有效交易日）
+    return []
 
 
 def _valid_between(view: RunView, a, b) -> int:  # type: ignore[no-untyped-def]

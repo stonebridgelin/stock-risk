@@ -12,10 +12,7 @@ gzip 用标准库；压缩级别 6。本类只保存根目录，可以传给子�
 
 from __future__ import annotations
 
-import csv
-import gzip
 import html
-import json
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -23,7 +20,8 @@ from typing import Any
 from stock_risk.application.replay_chart_data import ChartData
 from stock_risk.application.replay_outputs import DAILY_COLUMNS
 from stock_risk.infrastructure.replay.chart import PLOTLY_JS, render_chart, write_plotly_js
-from stock_risk.infrastructure.replay.files import _fmt
+from stock_risk.infrastructure.replay.csv_io import fmt, read_csv, write_csv, write_csv_gz
+from stock_risk.infrastructure.replay.csv_io import write_manifest as _write_manifest
 
 
 class CompareFileSink:
@@ -46,22 +44,15 @@ class CompareFileSink:
     def write_csv(
         self, path: Path, columns: Sequence[str], rows: Sequence[Mapping[str, Any]]
     ) -> None:
-        with path.open("w", newline="", encoding="utf-8") as f:
-            w = csv.DictWriter(f, fieldnames=list(columns), extrasaction="ignore")
-            w.writeheader()
-            w.writerows({k: _fmt(r.get(k, "")) for k in columns} for r in rows)
+        write_csv(path, columns, rows)
 
     def write_csv_gz(
         self, path: Path, columns: Sequence[str], rows: Sequence[Sequence[Any]]
     ) -> None:
-        with gzip.open(path, "wt", newline="", encoding="utf-8", compresslevel=6) as f:
-            w = csv.writer(f)
-            w.writerow(columns)
-            w.writerows([_fmt(v) for v in r] for r in rows)
+        write_csv_gz(path, columns, rows)
 
     def read_csv(self, path: Path) -> list[dict[str, str]]:
-        with path.open(encoding="utf-8", newline="") as f:
-            return list(csv.DictReader(f))
+        return read_csv(path)
 
     def write_full(
         self,
@@ -80,11 +71,7 @@ class CompareFileSink:
         write_plotly_js(run_dir)
 
     def write_manifest(self, run_dir: Path, manifest: Mapping[str, Any]) -> Path:
-        path = run_dir / "run_manifest.json"
-        path.write_text(
-            json.dumps(manifest, ensure_ascii=False, indent=2, default=str) + "\n", "utf-8"
-        )
-        return path
+        return _write_manifest(run_dir, manifest)
 
     def write_timeline_index(
         self, run_dir: Path, run_id: str, files: Sequence[Mapping[str, Any]]
@@ -108,7 +95,7 @@ class CompareFileSink:
                     f"<td>{html.escape(str(r.get('level_before', '')))} → "
                     f"{html.escape(str(r.get('level_after', '')))}</td>"
                     f"<td>{html.escape(str(r.get('reasons', '') or r.get('detail', '')))}</td>"
-                    f"<td>{html.escape(str(_fmt(r.get('close', ''))))}</td></tr>"
+                    f"<td>{html.escape(str(fmt(r.get('close', ''))))}</td></tr>"
                     for r in rows
                 )
                 cells.append(

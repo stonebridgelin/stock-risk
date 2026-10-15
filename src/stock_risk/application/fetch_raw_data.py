@@ -7,7 +7,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Collection, Mapping
+from collections.abc import Collection, Mapping
 from datetime import UTC, date, datetime
 
 from stock_risk.application.models import FetchOutcome, FetchReport, SegmentRecord
@@ -18,12 +18,11 @@ from stock_risk.application.ports import (
     SegmentProvider,
     UniverseProvider,
 )
+from stock_risk.application.progress import ProgressFn, quiet
 from stock_risk.domain.market_data import PriceHistory, quality_warnings
 from stock_risk.domain.seal import EXPLORATION_END, assert_sealed, truncate_to_exploration
 from stock_risk.domain.segments import SegmentError, SymbolSegment, clip_history, stitch
 from stock_risk.domain.universe import UniverseMember
-
-ProgressFn = Callable[[str], None]
 
 
 class FetchRawDataService:
@@ -32,7 +31,7 @@ class FetchRawDataService:
         source: PriceSource,
         universe: UniverseProvider,
         repository: RawDataRepository,
-        progress: ProgressFn = print,
+        progress: ProgressFn = quiet,
         segments: SegmentProvider | None = None,
     ) -> None:
         self._source = source

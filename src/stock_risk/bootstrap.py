@@ -7,6 +7,7 @@ from stock_risk.application.check_calendar import CheckCalendarService
 from stock_risk.application.compare.service import CompareService
 from stock_risk.application.fetch_raw_data import FetchRawDataService
 from stock_risk.application.market_data_loader import MarketDataLoader
+from stock_risk.application.progress import ProgressFn, quiet
 from stock_risk.application.replay import ReplayService
 from stock_risk.application.replay_run import ReplayRunService
 from stock_risk.application.show_ranges import ShowRangesService
@@ -31,13 +32,16 @@ from stock_risk.infrastructure.storage.ranges_calendar_writers import (
 from stock_risk.infrastructure.tiingo.client import TiingoPriceSource
 
 
-def build_fetch_raw_data_service(settings: Settings) -> FetchRawDataService:
+def build_fetch_raw_data_service(
+    settings: Settings, progress: ProgressFn = quiet
+) -> FetchRawDataService:
     if not settings.tiingo_api_key:
         raise SystemExit("未配置 TIINGO_API_KEY（项目根目录 .env 或环境变量）")
     return FetchRawDataService(
         source=TiingoPriceSource(settings.tiingo_api_key.reveal()),
         universe=CsvUniverseProvider(settings.exploration_universe_file),
         repository=CsvRawDataRepository(settings.raw_data_dir),
+        progress=progress,
         segments=CsvSegmentProvider(settings.symbol_segments_file),
     )
 
@@ -83,11 +87,12 @@ def build_replay_service(settings: Settings) -> ReplayService:
     )
 
 
-def build_replay_run_service(settings: Settings) -> ReplayRunService:
+def build_replay_run_service(settings: Settings, progress: ProgressFn = quiet) -> ReplayRunService:
     return ReplayRunService(
         replay=build_replay_service(settings),
         sink=ReplayFileSink(settings.replay_output_dir),
         env=LocalRunEnvironment(settings.project_root),
+        progress=progress,
     )
 
 
@@ -96,9 +101,10 @@ def build_v0_regression(settings: Settings) -> tuple[ReplayService, ReplayFileSi
     return build_replay_service(settings), ReplayFileSink(settings.replay_output_dir)
 
 
-def build_compare_service(settings: Settings) -> CompareService:
+def build_compare_service(settings: Settings, progress: ProgressFn = quiet) -> CompareService:
     return CompareService(
         replay=build_replay_service(settings),
         sink=CompareFileSink(settings.compare_output_dir),
         env=LocalRunEnvironment(settings.project_root),
+        progress=progress,
     )

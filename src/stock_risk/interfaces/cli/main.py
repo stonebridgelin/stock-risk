@@ -33,7 +33,7 @@ DEFAULT_START = DOWNLOAD_START
 
 
 def _cmd_fetch_raw(args: argparse.Namespace) -> int:
-    service = build_fetch_raw_data_service(load_settings())
+    service = build_fetch_raw_data_service(load_settings(), progress=print)
     symbols = [s for s in args.symbols.split(",") if s.strip()] if args.symbols else None
     report = service.run(start=date.fromisoformat(args.start), force=args.force, symbols=symbols)
     print(f"\n完成：成功 {len(report.succeeded)} 个，缺失 {len(report.failed)} 个。")
@@ -88,7 +88,7 @@ def _cmd_show_ranges(args: argparse.Namespace) -> int:
 def _cmd_replay(args: argparse.Namespace) -> int:
     from datetime import datetime
 
-    service = build_replay_run_service(load_settings())
+    service = build_replay_run_service(load_settings(), progress=print)
     symbols = [s for s in args.symbols.split(",") if s.strip()] if args.symbols else None
     started = datetime.now().astimezone()
     if args.candidates == "reference12":
@@ -117,7 +117,7 @@ def _cmd_regress_v0(args: argparse.Namespace) -> int:
     if not baseline.is_dir():
         print(f"找不到基准运行目录：{baseline}")
         return 2
-    report = run_v0_regression(replay, sink, baseline)
+    report = run_v0_regression(replay, sink, baseline, progress=print)
     print(
         f"基准 {report.baseline_run_id}：比较 {report.compared_targets} 套、"
         f"{report.compared_rows} 行、{report.compared_cells} 个单元格；"
@@ -131,7 +131,7 @@ def _cmd_regress_v0(args: argparse.Namespace) -> int:
 def _cmd_compare(args: argparse.Namespace) -> int:
     from datetime import datetime
 
-    service = build_compare_service(load_settings())
+    service = build_compare_service(load_settings(), progress=print)
     only = [s for s in args.sets.split(",") if s.strip()] if args.sets else None
     symbols = [s for s in args.symbols.split(",") if s.strip()] if args.symbols else None
     m = service.run(

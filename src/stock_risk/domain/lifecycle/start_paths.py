@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Any
 
-from stock_risk.domain.indicator_source import IndicatorSource, compute_r2
+from stock_risk.domain.indicator_source import IndicatorSource, R2Result, compute_r2
 from stock_risk.domain.lifecycle.model import Level
 from stock_risk.domain.lifecycle.params import AtrBasis, EngineParams, LongPath
 from stock_risk.domain.numeric import InvalidInputError, Kind, ge
@@ -99,9 +99,25 @@ def _l_a_start(
     }
 
 
-def evaluate_start(
+@dataclass(frozen=True, slots=True)
+class _Paths:
+    """当日三条路径的判断（短窗口与长窗口的量）。"""
+
+    c: float
+    p_max: float
+    p_day: date
+    a_start: float
+    d_t: float
+    dd_t: float
+    s_ok: bool
+    r_ok: bool
+    l_ok: bool
+    long: tuple[float, date, float] | None  # (P^max_L, 日期, DD^L)，long_path = OFF 时为空
+
+
+def _paths(
     src: IndicatorSource, day: date, last_release: date | None, params: EngineParams
-) -> StartDecision:
+) -> tuple[_Paths, R2Result]:
     cand, tol, sw = params.candidate, params.tol, params.switches
     c = src.close(day)
     p_max, p_day = src.window_max_close(day, params.fixed.w, last_release)
@@ -112,56 +128,57 @@ def evaluate_start(
     floor_ok = sw.x1 == 0 or ge(dd_t, sw.x1, Kind.RATIO, tol)
     s_ok = ge(d_t, cand.k1, Kind.RATIO, tol) and floor_ok
     r_ok = r2.triggered and (not sw.r2_floor or ge(dd_t, sw.x1, Kind.RATIO, tol))
-    dd_l: float | None = None
+    long = None
     l_ok = False
     if sw.long_path is not LongPath.OFF:
-        p_l, p_l_day, dd_l = _long_path(src, day, c, last_release, params)
-        l_ok = ge(dd_l, sw.x_long, Kind.RATIO, tol)
+        long = _long_path(src, day, c, last_release, params)
+        l_ok = ge(long[2], sw.x_long, Kind.RATIO, tol)
+    return _Paths(c, p_max, p_day, a_start, d_t, dd_t, s_ok, r_ok, l_ok, long), r2
+
+
+def evaluate_start(
+    src: IndicatorSource, day: date, last_release: date | None, params: EngineParams
+) -> StartDecision:
+    sw = params.switches
+    pt, r2 = _paths(src, day, last_release, params)
+    dd_l = pt.long[2] if pt.long is not None else None
     record: dict[str, Any] = {
-        "d_t": d_t,
-        "a_start": a_start,
+        "d_t": pt.d_t,
+        "a_start": pt.a_start,
         "r2_status": r2.status.value,
         "r2_score": r2.gap_score,
         "r2_triggered": r2.triggered,
-        "dd_t": dd_t,
+        "dd_t": pt.dd_t,
         "dd_l": dd_l,
-        "s_ok": s_ok,
-        "r_ok": r_ok,
-        "l_ok": l_ok,
-        "r2_filtered": r2.triggered and not r_ok,
+        "s_ok": pt.s_ok,
+        "r_ok": pt.r_ok,
+        "l_ok": pt.l_ok,
+        "r2_filtered": r2.triggered and not pt.r_ok,
     }
     basis = {"r2_status": r2.status.value, "r2_score": r2.gap_score}
-    if not (s_ok or r_ok or l_ok):
-        return StartDecision(None, "T8", (), None, p_max, p_day, a_start, record, basis)
-
-    v08: dict[str, Any] = {"dd_t": dd_t, "dd_l": dd_l, "x1": sw.x1, "x2": sw.x2}
-    if s_ok or r_ok:
-        path, p_ep, p_ep_day, atr_ep = ("S" if s_ok else "R"), p_max, p_day, a_start
+    if not (pt.s_ok or pt.r_ok or pt.l_ok):
+        return StartDecision(None, "T8", (), None, pt.p_max, pt.p_day, pt.a_start, record, basis)
+    v08: dict[str, Any] = {"dd_t": pt.dd_t, "dd_l": dd_l, "x1": sw.x1, "x2": sw.x2}
+    if pt.s_ok or pt.r_ok:
+        path, p_ep, p_ep_day, atr_ep = ("S" if pt.s_ok else "R"), pt.p_max, pt.p_day, pt.a_start
     else:
-        path, p_ep, p_ep_day = "L", p_l, p_l_day
-        atr_ep, extra = _l_a_start(src, p_l_day, day, params)
+        assert pt.long is not None
+        path, p_ep, p_ep_day = "L", pt.long[0], pt.long[1]
+        atr_ep, extra = _l_a_start(src, p_ep_day, day, params)
         v08.update(extra)
-    d_ep, dd_ep = (p_ep - c) / atr_ep, 1 - c / p_ep
+    d_ep, dd_ep = (p_ep - pt.c) / atr_ep, 1 - pt.c / p_ep
     level = Level.ALERT if full_alert(d_ep, dd_ep, params) else Level.WATCH
     reasons: list[str] = []
-    if s_ok:
+    if pt.s_ok:
         reasons.append("R1_GE_K2" if level is Level.ALERT else "R1_GE_K1")
-    if r_ok:
+    if pt.r_ok:
         reasons.append("GAP")
     if not reasons:
         reasons.append("R1L_CUMULATIVE")
     v08["entry_path"] = path
     record.update(d_ep=d_ep, dd_ep=dd_ep)
-    basis.update(d_t=d_t, a_start=atr_ep, p_ep=p_ep, p_ep_day=p_ep_day)
+    basis.update(d_t=pt.d_t, a_start=atr_ep, p_ep=p_ep, p_ep_day=p_ep_day)
+    transition = "T6" if level is Level.ALERT else "T7"
     return StartDecision(
-        level,
-        "T6" if level is Level.ALERT else "T7",
-        tuple(reasons),
-        path,
-        p_ep,
-        p_ep_day,
-        atr_ep,
-        record,
-        basis,
-        v08,
+        level, transition, tuple(reasons), path, p_ep, p_ep_day, atr_ep, record, basis, v08
     )

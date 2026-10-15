@@ -100,7 +100,18 @@ def write_tables(
         "special_v1_l_release_without_rise.csv",
         [r for o in ordered for r in o.l_release_no_rise],
     )
-    pair_rows = []
+    pair_rows = _pair_rows(sets, outcomes, by_set)
+    dump("pairs_summary.csv", pair_rows)
+    return written
+
+
+def _pair_rows(
+    sets: Sequence[VariantSet],
+    outcomes: Mapping[str, SetOutcome],
+    by_set: Mapping[str, Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """单开关配对：两套的负担指标、差值与逐日覆盖四格。"""
+    rows = []
     for pr in pairs(tuple(sets)):
         if pr.a not in outcomes or pr.b not in outcomes:
             continue
@@ -114,6 +125,5 @@ def write_tables(
             f"cov_{k}": v
             for k, v in pair_coverage(outcomes[pr.a].levels, outcomes[pr.b].levels).items()
         }
-        pair_rows.append(row)
-    dump("pairs_summary.csv", pair_rows)
-    return written
+        rows.append(row)
+    return rows

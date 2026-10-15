@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
+from typing import Any
 
 import plotly.graph_objects as go
 from plotly.offline import get_plotlyjs
@@ -51,6 +52,27 @@ def render_chart(data: ChartData, path: Path, plotly_js_rel: str) -> None:
         rows=2, cols=1, shared_xaxes=True, row_heights=[0.68, 0.32], vertical_spacing=0.04
     )
     x = [d.isoformat() for d in data.days]
+    _price_panel(fig, data, x)
+    _event_markers(fig, data)
+    _missing_markers(fig, data)
+    _drawdown_panel(fig, data, x)
+    fig.update_layout(
+        title={"text": data.title, "font": {"size": 14}},
+        shapes=_shapes(data),
+        annotations=_annotations(data),
+        hovermode="x unified",
+        height=820,
+        legend={"orientation": "h", "y": 1.08},
+        yaxis3={"overlaying": "y2", "side": "right", "title": "回撤 %", "showgrid": False},
+        margin={"l": 60, "r": 60, "t": 110, "b": 70},
+    )
+    fig.update_yaxes(title_text="价格", row=1, col=1)
+    fig.update_yaxes(title_text="D", row=2, col=1)
+    fig.write_html(path, include_plotlyjs=plotly_js_rel, full_html=True, div_id="chart")
+
+
+def _price_panel(fig: go.Figure, data: ChartData, x: list[str]) -> None:
+    """主图：复权收盘、L_ep、确认线、强恢复门槛线。"""
     fig.add_trace(
         go.Scatter(x=x, y=data.close, name="收盘（复权）", line={"color": "#212529", "width": 1.2}),
         row=1,
@@ -62,10 +84,13 @@ def render_chart(data: ChartData, path: Path, plotly_js_rel: str) -> None:
         ("强恢复门槛", data.strong_threshold, {"color": "#1e8449", "dash": "dashdot", "width": 1}),
     ):
         fig.add_trace(go.Scatter(x=x, y=ys, name=name, line=style, connectgaps=False), row=1, col=1)
-    ev_x = [e.day.isoformat() for e in data.events]
+
+
+def _event_markers(fig: go.Figure, data: ChartData) -> None:
+    """事件标记（悬停显示事件与依据）。"""
     fig.add_trace(
         go.Scatter(
-            x=ev_x,
+            x=[e.day.isoformat() for e in data.events],
             y=[e.y for e in data.events],
             mode="markers",
             name=EVENT_TRACE,
@@ -81,24 +106,30 @@ def render_chart(data: ChartData, path: Path, plotly_js_rel: str) -> None:
         row=1,
         col=1,
     )
-    if data.missing_days:
-        fig.add_trace(
-            go.Scatter(
-                x=[d.isoformat() for d in data.missing_days],
-                y=[None] * len(data.missing_days),
-                mode="markers",
-                name=f"缺价日（{MISSING_NOTE}）",
-                text=[MISSING_NOTE] * len(data.missing_days),
-                hovertemplate="%{x}<br>%{text}<extra></extra>",
-            ),
-            row=1,
-            col=1,
-        )
-        for d in data.missing_days:
-            fig.add_vline(
-                x=d.isoformat(),
-                line={"color": "#6c757d", "width": 1, "dash": "dot"},
-            )
+
+
+def _missing_markers(fig: go.Figure, data: ChartData) -> None:
+    """缺价日：竖虚线，图例与悬停说明"当日缺价，状态未更新"（T08a B-04）。"""
+    if not data.missing_days:
+        return
+    fig.add_trace(
+        go.Scatter(
+            x=[d.isoformat() for d in data.missing_days],
+            y=[None] * len(data.missing_days),
+            mode="markers",
+            name=f"缺价日（{MISSING_NOTE}）",
+            text=[MISSING_NOTE] * len(data.missing_days),
+            hovertemplate="%{x}<br>%{text}<extra></extra>",
+        ),
+        row=1,
+        col=1,
+    )
+    for d in data.missing_days:
+        fig.add_vline(x=d.isoformat(), line={"color": "#6c757d", "width": 1, "dash": "dot"})
+
+
+def _drawdown_panel(fig: go.Figure, data: ChartData, x: list[str]) -> None:
+    """副图：D_T、D_ep 与背景序列的 63 日回撤（右轴）。"""
     fig.add_trace(
         go.Scatter(x=x, y=data.d_t, name="D_T（无预警）", line={"color": "#6c757d", "width": 1}),
         row=2,
@@ -119,7 +150,11 @@ def render_chart(data: ChartData, path: Path, plotly_js_rel: str) -> None:
                 line={"width": 1, "dash": "dot"},
             ),
         )
-    shapes = [
+
+
+def _shapes(data: ChartData) -> list[dict[str, Any]]:
+    """状态色带与更正区间（顶部蓝条）。"""
+    bands = [
         {
             "type": "rect",
             "xref": "x",
@@ -134,7 +169,7 @@ def render_chart(data: ChartData, path: Path, plotly_js_rel: str) -> None:
         }
         for a, b, s in data.bands
     ]
-    shapes += [
+    corrections = [
         {
             "type": "rect",
             "xref": "x",
@@ -148,28 +183,19 @@ def render_chart(data: ChartData, path: Path, plotly_js_rel: str) -> None:
         }
         for a, b, _ in data.corrections
     ]
-    annotations = [
-        {
-            "text": data.note,
-            "xref": "paper",
-            "yref": "paper",
-            "x": 0,
-            "y": -0.08,
-            "showarrow": False,
-            "font": {"size": 11, "color": "#6c757d"},
-        },
-        {
-            "text": "色带：黄 = 关注，红 = 警戒，深灰 = 数据中断，浅灰 = 不可计算",
-            "xref": "paper",
-            "yref": "paper",
-            "x": 1,
-            "y": -0.08,
-            "xanchor": "right",
-            "showarrow": False,
-            "font": {"size": 11, "color": "#6c757d"},
-        },
+    return bands + corrections
+
+
+def _annotations(data: ChartData) -> list[dict[str, Any]]:
+    """底部说明（数据口径、色带含义）与更正区间的标注。"""
+    note = {"xref": "paper", "yref": "paper", "y": -0.08, "showarrow": False}
+    grey = {"size": 11, "color": "#6c757d"}
+    legend = "色带：黄 = 关注，红 = 警戒，深灰 = 数据中断，浅灰 = 不可计算"
+    out: list[dict[str, Any]] = [
+        {"text": data.note, **note, "x": 0, "font": grey},
+        {"text": legend, **note, "x": 1, "xanchor": "right", "font": grey},
     ]
-    annotations += [
+    out += [
         {
             "text": label,
             "xref": "x",
@@ -182,19 +208,7 @@ def render_chart(data: ChartData, path: Path, plotly_js_rel: str) -> None:
         }
         for a, _, label in data.corrections
     ]
-    fig.update_layout(
-        title={"text": data.title, "font": {"size": 14}},
-        shapes=shapes,
-        annotations=annotations,
-        hovermode="x unified",
-        height=820,
-        legend={"orientation": "h", "y": 1.08},
-        yaxis3={"overlaying": "y2", "side": "right", "title": "回撤 %", "showgrid": False},
-        margin={"l": 60, "r": 60, "t": 110, "b": 70},
-    )
-    fig.update_yaxes(title_text="价格", row=1, col=1)
-    fig.update_yaxes(title_text="D", row=2, col=1)
-    fig.write_html(path, include_plotlyjs=plotly_js_rel, full_html=True, div_id="chart")
+    return out
 
 
 def read_chart_events(path: Path) -> list[tuple[str, str]]:

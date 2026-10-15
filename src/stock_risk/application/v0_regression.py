@@ -6,19 +6,19 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
+from stock_risk.application.progress import ProgressFn, quiet
 from stock_risk.application.replay import ReplayService, SymbolReplay, replay_prepared
+from stock_risk.application.replay_episodes import episode_csv_rows, episode_rows
 from stock_risk.application.replay_outputs import (
     DAILY_FIELDS,
     EPISODE_COLUMNS,
     EVENT_COLUMNS,
     daily_rows,
-    episode_csv_rows,
-    episode_rows,
     event_rows,
 )
 from stock_risk.domain.lifecycle.params import (
@@ -86,7 +86,7 @@ def run_v0_regression(
     replay: ReplayService,
     sink: TableSink,
     baseline_dir: Path,
-    progress: Callable[[str], None] = print,
+    progress: ProgressFn = quiet,
 ) -> RegressionReport:
     report = RegressionReport(baseline_dir.name)
     run_id = baseline_dir.name  # 输出中的 run_id 列按基准填写，以便逐值比较

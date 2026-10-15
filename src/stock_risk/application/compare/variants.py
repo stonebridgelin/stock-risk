@@ -1,12 +1,15 @@
 """T06b 对照回放的变体全集、套编号、基准与单开关配对（任务卡 T06b"变体"一节）。纯函数。
 
 数值取参考候选（N 20、k₁ 2、k₂ 4、K 3、d 3、u_rel 3），每个变体在 12 种结构组合上运行。
-N14 组为 V0 与 V3 参考取值在 N = 14 下的 24 套（网格 1–12）。合计 624 套。
+N14 组为 V0 与 V3 参考取值在 N = 14 下的 24 套（网格 1–12）。
+V3_LOFF 组为 V3 参考取值但 long_path = OFF 的 12 套（T08a C-05），与 V3 参考取值配对
+（配对种类 long_path_off）。合计 636 套。
 """
 
 from __future__ import annotations
 
 import itertools
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 
 from stock_risk.domain.lifecycle.params import (
@@ -31,13 +34,14 @@ V3_REFERENCE = V08Switches(
     r2_floor=False,
     release_hyst=ReleaseHyst.EFFECTIVE,
 )
+V3_LONG_OFF = replace(V3_REFERENCE, long_path=LongPath.OFF)  # T08a C-05
 
 
 @dataclass(frozen=True, slots=True)
 class VariantSet:
     """一套：变体组 × 开关 × 候选（结构组合与 N）。"""
 
-    group: str  # V0 / V1 / V2 / V3 / V4 / N14
+    group: str  # V0 / V1 / V2 / V3 / V4 / N14 / V3_LOFF
     variant: str  # V0 / V1 / V2 / V3 / V4（N14 组内为 V0 或 V3）
     switches: V08Switches
     candidate_id: int  # 网格编号（N20：385–396；N14：1–12）
@@ -97,6 +101,7 @@ def variant_sets() -> tuple[VariantSet, ...]:
         add("V4", "V4", sw, STRUCTURE_N20)
     add("N14", "V0", V08Switches(), STRUCTURE_N14)
     add("N14", "V3", V3_REFERENCE, STRUCTURE_N14)
+    add("V3_LOFF", "V3", V3_LONG_OFF, STRUCTURE_N20)
     ids = [s.set_id for s in out]
     if len(set(ids)) != len(ids):
         raise AssertionError("套编号重复")
@@ -112,13 +117,13 @@ def timeline_sets(sets: tuple[VariantSet, ...]) -> tuple[VariantSet, VariantSet]
 
 @dataclass(frozen=True, slots=True)
 class Pair:
-    kind: str  # r2_floor / long_path / x1 / x2 / release_hyst / rec_scale / N
-    a: str  # 基准一侧的套编号（OFF、X1、8%、15%、OLD、OFF、N20）
+    kind: str  # r2_floor / long_path / x1 / x2 / release_hyst / rec_scale / N / long_path_off
+    a: str  # 基准一侧的套编号（OFF、X1、8%、15%、OLD、OFF、N20、L 关闭）
     b: str
 
 
 def pairs(sets: tuple[VariantSet, ...]) -> tuple[Pair, ...]:
-    """单开关配对（任务卡 T06b 第 4 项）。"""
+    """单开关配对（任务卡 T06b 第 4 项；T08a C-05 增加 long_path_off）。"""
     by_key = {(s.variant, s.switches, s.n, s.structure_id): s.set_id for s in sets}
     out: list[Pair] = []
 
@@ -127,41 +132,38 @@ def pairs(sets: tuple[VariantSet, ...]) -> tuple[Pair, ...]:
             out.append(Pair(kind, by_key[a], by_key[b]))
 
     for s in sets:
-        if s.group not in ("V1", "V3", "V4") or s.n != 20:
-            continue
-        sw, key = s.switches, (s.variant, s.n, s.structure_id)
-        flips = {
-            "r2_floor": (not sw.r2_floor, {"r2_floor": True}),
-            "long_path": (sw.long_path is LongPath.X1, {"long_path": LongPath.X2}),
-            "x1": (sw.x1 == 0.08, {"x1": 0.10}),
-            "x2": (sw.x2 == 0.15, {"x2": 0.20}),
-        }
-        for kind, (is_a, change) in flips.items():
-            if is_a:
-                pair(kind, (key[0], sw, *key[1:]), (key[0], replace(sw, **change), *key[1:]))
-        if s.variant == "V1":
-            pair(
-                "release_hyst",
-                (s.variant, sw, *key[1:]),
-                ("V3", replace(sw, release_hyst=ReleaseHyst.EFFECTIVE), *key[1:]),
-            )
-        if s.variant == "V3":
-            pair(
-                "rec_scale",
-                (s.variant, sw, *key[1:]),
-                ("V4", replace(sw, rec_scale=RecScale.PRICE), *key[1:]),
-            )
+        if s.group in ("V1", "V3", "V4") and s.n == 20:
+            _switch_pairs(s, pair)
     for s in sets:
+        sid = s.structure_id
         if s.group == "V0":
-            pair(
-                "release_hyst",
-                ("V0", s.switches, 20, s.structure_id),
-                ("V2", V08Switches(release_hyst=ReleaseHyst.EFFECTIVE), 20, s.structure_id),
-            )
+            v2 = V08Switches(release_hyst=ReleaseHyst.EFFECTIVE)
+            pair("release_hyst", ("V0", s.switches, 20, sid), ("V2", v2, 20, sid))
         if s.group == "N14":
-            pair(
-                "N",
-                (s.variant, s.switches, 20, s.structure_id),
-                (s.variant, s.switches, 14, s.structure_id),
-            )
+            pair("N", (s.variant, s.switches, 20, sid), (s.variant, s.switches, 14, sid))
+        if s.group == "V3_LOFF":  # L 路径有无（T08a C-05）
+            pair("long_path_off", ("V3", V3_LONG_OFF, 20, sid), ("V3", V3_REFERENCE, 20, sid))
     return tuple(out)
+
+
+def _switch_pairs(s: VariantSet, pair: Callable[[str, tuple, tuple], None]) -> None:
+    """V1、V3、V4 组内（N20）：每次只改一个开关；V1 → V3 改回滞，V3 → V4 改恢复尺度。"""
+    sw, rest = s.switches, (s.n, s.structure_id)
+    flips = {
+        "r2_floor": (not sw.r2_floor, {"r2_floor": True}),
+        "long_path": (sw.long_path is LongPath.X1, {"long_path": LongPath.X2}),
+        "x1": (sw.x1 == 0.08, {"x1": 0.10}),
+        "x2": (sw.x2 == 0.15, {"x2": 0.20}),
+    }
+    for kind, (is_a, change) in flips.items():
+        if is_a:
+            pair(kind, (s.variant, sw, *rest), (s.variant, replace(sw, **change), *rest))
+    if s.variant == "V1":
+        b = replace(sw, release_hyst=ReleaseHyst.EFFECTIVE)
+        pair("release_hyst", (s.variant, sw, *rest), ("V3", b, *rest))
+    if s.variant == "V3":
+        pair(
+            "rec_scale",
+            (s.variant, sw, *rest),
+            ("V4", replace(sw, rec_scale=RecScale.PRICE), *rest),
+        )

@@ -27,7 +27,7 @@ from tests.unit.application.test_replay_run import FakeEnv, service  # noqa: F40
 
 def test_variant_sets_and_ids() -> None:
     sets = variant_sets()
-    assert len(sets) == 624
+    assert len(sets) == 636
     assert Counter(s.group for s in sets) == {
         "V0": 12,
         "V1": 192,
@@ -35,6 +35,7 @@ def test_variant_sets_and_ids() -> None:
         "V3": 192,
         "V4": 192,
         "N14": 24,
+        "V3_LOFF": 12,
     }
     ids = {s.set_id for s in sets}
     assert "V3_x8_x15_X1_r2off_N20_s385" in ids and "V0_x0_x0_OFF_r2off_N14_s1" in ids
@@ -51,7 +52,9 @@ def test_variant_sets_and_ids() -> None:
         "release_hyst": 204,
         "rec_scale": 192,
         "N": 24,
+        "long_path_off": 12,
     }
+    assert "V3_x8_x15_OFF_r2off_N20_s385" in ids  # C-05：V3 参考取值但 L 关闭
 
 
 def test_pair_coverage_ignores_not_computable() -> None:
@@ -153,7 +156,7 @@ def test_compare_service_end_to_end(service, tmp_path: Path) -> None:  # noqa: F
     ):
         assert (run_dir / name).exists(), name
     assert (run_dir / "timelines" / "index.html").exists()
-    assert len(m["variant_sets"]) == 624 and m["variant_set_count"] == 624
+    assert len(m["variant_sets"]) == 636 and m["variant_set_count"] == 636
     assert sorted(m["completed_sets"]) == sorted([*only, "V0_x0_x0_OFF_r2off_N20_s385"])
     pairs_rows = sink.read_csv(run_dir / "pairs_summary.csv")
     assert {r["pair_kind"] for r in pairs_rows} == {"r2_floor"}
@@ -194,3 +197,32 @@ def test_missing_day_status_keeps_frozen_level(level: Level | None, expect: str)
     """B-04：对照视图中缺价日的状态保留冻结时的等级。"""
     assert _status(DataStatus.MISSING, level) == expect
     assert _status(DataStatus.HAS_BAR, Level.ALERT) == "警戒"
+
+
+def test_group_plan_runs_baseline_and_off_partner_once() -> None:
+    """D-04：同一（结构组合, N）组内，V0 基准与 r2_floor OFF 配对各只运行一次。"""
+    from stock_risk.application.compare.worker import group_key, group_plan
+
+    sets = {s.set_id: s for s in variant_sets()}
+    group = [sid for sid, s in sets.items() if group_key(s) == (385, 20)]
+    assert len(group) == 1 + 16 + 1 + 16 + 16 + 1  # V0、V1、V2、V3、V4、V3_LOFF
+    plan = group_plan(sets, group)
+    order = [vs.set_id for vs, _ in plan.steps]
+    assert sorted(order) == sorted(group) and all(emit for _, emit in plan.steps)
+    assert order[0] == "V0_x0_x0_OFF_r2off_N20_s385"
+    for vs, _ in plan.steps:
+        if vs.switches.r2_floor:
+            off = vs.set_id.replace("_r2on_", "_r2off_")
+            assert order.index(off) < order.index(vs.set_id)
+    assert plan.keep == {"V0_x0_x0_OFF_r2off_N20_s385"} | {
+        sid.replace("_r2on_", "_r2off_") for sid in group if "_r2on_" in sid
+    }
+    # 只请求一个 ON 套：基准与 OFF 配对作为辅助运行，不输出
+    part = group_plan(sets, ["V1_x8_x15_X1_r2on_N20_s385"])
+    assert [(vs.set_id, emit) for vs, emit in part.steps] == [
+        ("V0_x0_x0_OFF_r2off_N20_s385", False),
+        ("V1_x8_x15_X1_r2off_N20_s385", False),
+        ("V1_x8_x15_X1_r2on_N20_s385", True),
+    ]
+    with pytest.raises(ValueError):
+        group_plan(sets, ["V0_x0_x0_OFF_r2off_N20_s385", "V0_x0_x0_OFF_r2off_N14_s1"])

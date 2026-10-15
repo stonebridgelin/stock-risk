@@ -32,7 +32,7 @@ from stock_risk.domain.lifecycle.model import (
 )
 from stock_risk.domain.lifecycle.params import EngineParams
 from stock_risk.domain.lifecycle.records import build_record
-from stock_risk.domain.lifecycle.start_paths import evaluate_start
+from stock_risk.domain.lifecycle.start_paths import StartDecision, evaluate_start
 from stock_risk.domain.numeric import InvalidInputError
 
 
@@ -107,57 +107,58 @@ def _missing_day(
     """A 第 1 步（T1–T3；E-02）。"""
     g = params.assumptions.gap_break
     m = state.m + 1
-    ep = state.episode
-    events: list[Event] = []
-    extra: dict[str, Any] = {}
     issue = Event(
         EventType.DATA_ISSUE, day, (state.symbol, EventType.DATA_ISSUE.value, day), None, {"m": m}
     )
     if m <= g:
-        if ep is not None:
-            if ep.prev_confirm and in_replay:
-                events.append(
-                    Event(
-                        EventType.RECOVERY_REVOKED,
-                        day,
-                        (ep.episode_id, ep.cycle_no, ep.obs_n),
-                        "T1",
-                        {"reason": "DATA_GAP"},
-                    )
-                )
-            ep = replace(observation_reset(ep, day), prev_confirm=False)
-            extra["reset_reasons"] = (ResetReason.DATA_GAP,)
-        if in_replay:
-            events.append(replace(issue, transition="T1"))
-        state = replace(state, m=m, episode=ep)
-        extra["transition"] = "T1"
+        state, events, extra = _gap_day(state, day, m, in_replay, issue)
         status = DataStatus.MISSING
     elif m == g + 1:
-        if ep is not None and in_replay:
-            events.append(
-                Event(
-                    EventType.DATA_BREAK,
-                    day,
-                    (ep.episode_id, EventType.DATA_BREAK.value, day),
-                    "T2",
-                    {"m": m},
-                )
-            )
-            extra["end_reason"] = EndReason.DATA_BREAK
-            extra["episode_id"] = ep.episode_id
-        if in_replay:
-            events.append(replace(issue, transition="T2"))
-        state = replace(state, m=m, episode=None, last_release=None, display=Display.DATA_BREAK)
-        extra["transition"] = "T2"
+        state, events, extra = _break_day(state, day, m, in_replay, issue)
         status = DataStatus.DATA_BREAK
     else:
-        state = replace(state, m=m, display=Display.DATA_BREAK)
+        state, events, extra = replace(state, m=m, display=Display.DATA_BREAK), [], {}
         extra["transition"] = "T3"
         status = DataStatus.DATA_BREAK
     rec = build_record(
         state, day, params, in_replay=in_replay, data_status=status, ep=state.episode, extra=extra
     )
     return StepResult(state, tuple(events), rec)
+
+
+def _gap_day(
+    state: SecurityState, day: date, m: int, in_replay: bool, issue: Event
+) -> tuple[SecurityState, list[Event], dict[str, Any]]:
+    """T1：连续缺价不超过 G。有预警时撤销尚未结束的确认（DATA_GAP）并观察重置。"""
+    ep, events = state.episode, []
+    extra: dict[str, Any] = {"transition": "T1"}
+    if ep is not None:
+        if ep.prev_confirm and in_replay:
+            key = (ep.episode_id, ep.cycle_no, ep.obs_n)
+            basis = {"reason": "DATA_GAP"}
+            events.append(Event(EventType.RECOVERY_REVOKED, day, key, "T1", basis))
+        ep = replace(observation_reset(ep, day), prev_confirm=False)
+        extra["reset_reasons"] = (ResetReason.DATA_GAP,)
+    if in_replay:
+        events.append(replace(issue, transition="T1"))
+    return replace(state, m=m, episode=ep), events, extra
+
+
+def _break_day(
+    state: SecurityState, day: date, m: int, in_replay: bool, issue: Event
+) -> tuple[SecurityState, list[Event], dict[str, Any]]:
+    """T2：连续缺价达到 G + 1，数据中断。进行中的预警以 DATA_BREAK 结束，last_release 清空。"""
+    ep, events = state.episode, []
+    extra: dict[str, Any] = {"transition": "T2"}
+    if ep is not None and in_replay:
+        key = (ep.episode_id, EventType.DATA_BREAK.value, day)
+        events.append(Event(EventType.DATA_BREAK, day, key, "T2", {"m": m}))
+        extra["end_reason"] = EndReason.DATA_BREAK
+        extra["episode_id"] = ep.episode_id
+    if in_replay:
+        events.append(replace(issue, transition="T2"))
+    state = replace(state, m=m, episode=None, last_release=None, display=Display.DATA_BREAK)
+    return state, events, extra
 
 
 def _no_episode(
@@ -175,9 +176,22 @@ def _no_episode(
             state, day, params, in_replay=True, data_status=DataStatus.HAS_BAR, ep=None, extra=extra
         )
         return StepResult(state, (), rec)
+    ep, start = _start_episode(state.symbol, day, src, dec)
+    state = replace(state, episode=ep, display=_display(ep))
+    extra["transition"] = dec.transition
+    rec = build_record(
+        state, day, params, in_replay=True, data_status=DataStatus.HAS_BAR, ep=ep, extra=extra
+    )
+    return StepResult(state, (start,), rec)
+
+
+def _start_episode(
+    symbol: str, day: date, src: IndicatorSource, dec: StartDecision
+) -> tuple[Episode, Event]:
+    """第 5 步：建立新预警（周期 1，obs_start = 当日），并给出 START 事件。"""
     c = src.close(day)
     l_ep, l_day = src.min_close(dec.p_ep_day, day)
-    eid = episode_id_for(state.symbol, day)
+    eid = episode_id_for(symbol, day)
     ep = Episode(
         eid,
         day,
@@ -205,13 +219,7 @@ def _no_episode(
         "r2_score": dec.basis["r2_score"],
         "v08": dec.basis_v08,  # v0.8 新增数值，输出时单列
     }
-    start = Event(EventType.START, day, (eid, EventType.START.value, day), dec.transition, basis)
-    state = replace(state, episode=ep, display=_display(ep))
-    extra["transition"] = dec.transition
-    rec = build_record(
-        state, day, params, in_replay=True, data_status=DataStatus.HAS_BAR, ep=ep, extra=extra
-    )
-    return StepResult(state, (start,), rec)
+    return ep, Event(EventType.START, day, (eid, EventType.START.value, day), dec.transition, basis)
 
 
 def _with_episode(

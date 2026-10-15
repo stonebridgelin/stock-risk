@@ -1,7 +1,9 @@
-"""T06b 的工作单元：一套 × 全部回放对象。在子进程中运行，结果写入该套的目录，汇总量返回父进程。
+"""T06b 的工作单元：一组（结构组合, N）内的若干套 × 全部回放对象。在子进程中运行，结果写入
+各套的目录，汇总量返回父进程。
 
-每个对象依次运行新变体、对应的 V0 基准（新变体不是 V0 时）与 r2_floor OFF 配对（新变体为 ON 时），
-分析完即释放，不在内存中保留整套逐日结果。
+T08a D-04：同组内 V0 基准与 r2_floor OFF 配对各只运行一次。组内先运行 V0，再按变体全集的顺序
+运行其余各套（OFF 排在对应的 ON 之前）；配对所需的视图按对象缓存，最后一个使用者用完即释放。
+只请求部分套时，所需的基准或配对作为辅助运行（不输出）。
 """
 
 from __future__ import annotations
@@ -10,70 +12,24 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import date
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any
 
 from stock_risk.application.compare import analysis as an
 from stock_risk.application.compare.burden import burden_row, release_followups, unreleased
+from stock_risk.application.compare.set_outputs import CompareSink, SetRows, coverage_check
 from stock_risk.application.compare.timelines import TIMELINE_STOCKS, timeline_rows
 from stock_risk.application.compare.variants import VariantSet
 from stock_risk.application.compare.views import PERIOD_END, RunView, build_view
 from stock_risk.application.replay import PreparedSymbol, SymbolReplay, replay_prepared
-from stock_risk.application.replay_chart_data import ChartData, build_chart_data
-from stock_risk.application.replay_outputs import (
-    EPISODE_COLUMNS,
-    EVENT_COLUMNS,
-    daily_rows,
-    episode_csv_rows,
-    episode_rows,
-    event_rows,
-)
-from stock_risk.application.replay_run import discrete_digest
+from stock_risk.application.replay_chart_data import build_chart_data
+from stock_risk.application.replay_outputs import daily_rows
+from stock_risk.application.replay_run_types import discrete_digest
 from stock_risk.domain.calendar import TradingCalendar
 from stock_risk.domain.lifecycle.invariants import check_invariants
 from stock_risk.domain.lifecycle.params import EXPLORATION_ASSUMPTIONS, EngineParams
 from stock_risk.domain.lifecycle.runner import RunResult
 
-COMPACT_COLUMNS = ["target", "day", "data_status", "display", "level", "episode_id"]
-COVERAGE_COLUMNS = [
-    "target",
-    "day",
-    "v0_display",
-    "v0_level",
-    "v0_episode_id",
-    "new_display",
-    "new_level",
-    "new_episode_id",
-]
-OVERLAP_COLUMNS = [
-    "target",
-    "v0_episode_id",
-    "new_episode_id",
-    "overlap_days",
-    "first_day",
-    "last_day",
-]
 LEVEL_CODE_NA = 9  # 不可计算或不在统计期间（单开关配对的覆盖四格只用可计算日）
-
-
-class CompareSink(Protocol):
-    def set_dir(self, run_dir: Path, set_id: str) -> Path: ...
-
-    def write_csv(
-        self, path: Path, columns: Sequence[str], rows: Sequence[Mapping[str, Any]]
-    ) -> None: ...
-
-    def write_csv_gz(
-        self, path: Path, columns: Sequence[str], rows: Sequence[Sequence[Any]]
-    ) -> None: ...
-
-    def write_full(
-        self,
-        run_dir: Path,
-        set_id: str,
-        target: str,
-        daily: Sequence[Mapping[str, Any]],
-        chart: ChartData,
-    ) -> None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,6 +67,15 @@ class SetOutcome:
     max_day: date | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class GroupPlan:
+    """一组的运行顺序。steps：(套, 是否输出)；keep：需缓存视图的套；release_after：用完即释放。"""
+
+    steps: tuple[tuple[VariantSet, bool], ...]
+    keep: frozenset[str]
+    release_after: Mapping[str, tuple[str, ...]]
+
+
 _CTX: WorkerContext | None = None
 
 
@@ -122,6 +87,59 @@ def init_worker(ctx: WorkerContext) -> None:
 
 def params_of(vs: VariantSet) -> EngineParams:
     return EngineParams(vs.candidate, EXPLORATION_ASSUMPTIONS, switches=vs.switches)
+
+
+def group_key(vs: VariantSet) -> tuple[int, int]:
+    """（结构组合, N）。"""
+    return vs.structure_id, vs.n
+
+
+def off_partner(sets: Mapping[str, VariantSet], vs: VariantSet) -> VariantSet | None:
+    """r2_floor = ON 的套对应的 OFF 套（同变体、同候选、其余开关相同）。"""
+    if not vs.switches.r2_floor:
+        return None
+    off = replace(vs.switches, r2_floor=False)
+    return next(
+        (
+            s
+            for s in sets.values()
+            if s.variant == vs.variant
+            and s.n == vs.n
+            and s.candidate_id == vs.candidate_id
+            and s.switches == off
+        ),
+        None,
+    )
+
+
+def _partners(sets: Mapping[str, VariantSet], vs: VariantSet) -> list[str]:
+    out = [] if vs.is_baseline else [vs.baseline_id]
+    off = off_partner(sets, vs)
+    return out + ([off.set_id] if off is not None else [])
+
+
+def group_plan(sets: Mapping[str, VariantSet], set_ids: Sequence[str]) -> GroupPlan:
+    keys = {group_key(sets[s]) for s in set_ids}
+    if len(keys) != 1:
+        raise ValueError(f"一组只能含同一（结构组合, N）的套：{sorted(keys)}")
+    order = {sid: i for i, sid in enumerate(sets)}
+    wanted = set(set_ids)
+    every = wanted | {p for s in set_ids for p in _partners(sets, sets[s])}
+    ordered = sorted(every, key=lambda s: (not sets[s].is_baseline, order[s]))
+    last_use: dict[str, str] = {}
+    for sid in ordered:
+        for p in _partners(sets, sets[sid]):
+            if ordered.index(p) > ordered.index(sid):
+                raise ValueError(f"{sid} 的配对 {p} 排在其后")
+            last_use[p] = sid
+    release: dict[str, list[str]] = {}
+    for p, consumer in last_use.items():
+        release.setdefault(consumer, []).append(p)
+    return GroupPlan(
+        tuple((sets[s], s in wanted) for s in ordered),
+        frozenset(last_use),
+        {k: tuple(v) for k, v in release.items()},
+    )
 
 
 def run_one(
@@ -139,176 +157,130 @@ def levels_code(view: RunView) -> bytes:
     )
 
 
-def run_set(set_id: str) -> SetOutcome:
+def run_group(set_ids: Sequence[str]) -> list[SetOutcome]:
     assert _CTX is not None, "子进程未初始化"
-    return run_set_with(_CTX, set_id)
+    return run_group_with(_CTX, set_ids)
+
+
+def run_group_with(ctx: WorkerContext, set_ids: Sequence[str]) -> list[SetOutcome]:
+    plan = group_plan(ctx.sets, set_ids)
+    cache: dict[str, dict[str, RunView]] = {}
+    outs: list[SetOutcome] = []
+    for vs, emit in plan.steps:
+        out, views = _run_set(ctx, vs, emit, cache)
+        if vs.set_id in plan.keep:
+            cache[vs.set_id] = views
+        for done in plan.release_after.get(vs.set_id, ()):
+            cache.pop(done, None)
+        if emit:
+            outs.append(out)
+    return outs
 
 
 def run_set_with(ctx: WorkerContext, set_id: str) -> SetOutcome:
-    vs = ctx.sets[set_id]
-    base_vs = ctx.sets[vs.baseline_id]
-    off_vs = (
-        next(
-            (
-                s
-                for s in ctx.sets.values()
-                if s.variant == vs.variant
-                and s.n == vs.n
-                and s.candidate_id == vs.candidate_id
-                and s.switches == replace(vs.switches, r2_floor=False)
-            ),
-            None,
-        )
-        if vs.switches.r2_floor
-        else None
-    )
-    out = SetOutcome(set_id)
-    events_all: list[dict[str, Any]] = []
-    episodes_all: list[dict[str, Any]] = []
-    compact: list[tuple] = []
-    coverage_rows: list[tuple] = []
-    compare_rows: list[dict[str, Any]] = []
-    overlap_all: list[tuple] = []
+    """单独运行一套（所需的基准与配对作为辅助运行）。"""
+    (out,) = run_group_with(ctx, [set_id])
+    return out
+
+
+def _run_set(
+    ctx: WorkerContext, vs: VariantSet, emit: bool, cache: Mapping[str, dict[str, RunView]]
+) -> tuple[SetOutcome, dict[str, RunView]]:
+    out, rows = SetOutcome(vs.set_id), SetRows(vs.set_id)
+    off_vs = off_partner(ctx.sets, vs)
+    base_views = None if vs.is_baseline else cache[vs.baseline_id]
+    off_views = None if off_vs is None else cache[off_vs.set_id]
+    views: dict[str, RunView] = {}
     for p in ctx.prepared:
         label = p.target.label
         try:
             rep, result = run_one(ctx, vs, p)
         except Exception as e:  # noqa: BLE001 —— 记录失败，写入运行清单并使运行失败
-            out.failed.append(f"{set_id}/{label}: {type(e).__name__}: {e}")
+            out.failed.append(f"{vs.set_id}/{label}: {type(e).__name__}: {e}")
             continue
-        out.violations += [
-            f"{set_id}/{label}: {v}" for v in check_invariants(result.results, rep.params)
-        ]
-        view = build_view(rep, set_id)
-        last = view.days[-1]
-        out.max_day = last if out.max_day is None or last > out.max_day else out.max_day
-        if (set_id, label) in ctx.digest_ids:
-            out.digests[label] = discrete_digest(result)
-        for r in event_rows(rep, ctx.run_id):
-            events_all.append({"set_id": set_id, **r})
-        for r in episode_csv_rows(rep, ctx.run_id, episode_rows(rep)):
-            episodes_all.append({"set_id": set_id, **r})
-        compact += [
-            (
-                label,
-                r.record.day.isoformat(),
-                r.record.data_status.value,
-                r.record.display.value,
-                view.level[i],
-                view.episode[i] or "",
-            )
-            for i, r in enumerate(result.results)
-        ]
-        fu = release_followups(view)
-        out.followups += [{"set_id": set_id, **f} for f in fu]
-        out.unreleased += [{"set_id": set_id, **u} for u in unreleased(view)]
-        out.burden.append({"set_id": set_id, **burden_row(view, fu)})
-        out.levels[label] = levels_code(view)
-        if set_id in ctx.timeline_ids:
-            ctx.sink.write_full(
-                ctx.run_dir,
-                set_id,
-                label,
-                daily_rows(rep, ctx.run_id),
-                build_chart_data(rep, ctx.run_id, ctx.background),
-            )
-            if p.target.symbol in TIMELINE_STOCKS:
-                out.timeline += timeline_rows(set_id, view, result)
-        if vs.is_baseline:
+        view = views[label] = build_view(rep, vs.set_id)
+        if not emit:
             continue
-        brep, bres = run_one(ctx, base_vs, p)
-        base = build_view(brep, base_vs.set_id)
-        rows, cells, excluded = an.coverage(base, view)
-        coverage_rows += rows
-        out.coverage_cells.append({"set_id": set_id, "target": label, **cells})
-        if (
-            sum(cells[k] for k in ("both", "only_v0", "only_new", "neither"))
-            != cells["common_days"]
-        ):
-            out.checks.append(f"{set_id}/{label}：覆盖四格之和不等于共同可计算日数")
-        out.excluded += excluded
-        cmp_rows = an.event_compare(base, view)
-        compare_rows += cmp_rows
-        out.checks += _coverage_check(set_id, label, base, view, cmp_rows)
-        overlap_all += an.overlap_rows(base, view, an.overlaps(base, view))
-        out.cancelled_escalations += [
-            {"set_id": set_id, **r} for r in an.cancelled_escalations(base, view)
-        ]
-        out.l_starts += [{"set_id": set_id, **r} for r in an.l_path_starts(base, view)]
-        if vs.variant == "V1":
-            out.l_release_no_rise += [
-                {"set_id": set_id, **r} for r in an.l_release_without_rise(view)
-            ]
-        if off_vs is not None:
-            orep, _ = run_one(ctx, off_vs, p)
-            rows_f, n_days = an.r2_filtered(build_view(orep, off_vs.set_id), view)
+        _record_target(ctx, vs, p, rep, result, view, out, rows)
+        if base_views is None:
+            continue
+        base = base_views.get(label)
+        if base is None:
+            out.failed.append(f"{vs.set_id}/{label}: 基准 {vs.baseline_id} 未得出结果")
+            continue
+        _compare_target(vs, label, base, view, out, rows)
+        if off_vs is not None and off_views is not None:
+            off = off_views.get(label)
+            if off is None:
+                out.failed.append(f"{vs.set_id}/{label}: 配对 {off_vs.set_id} 未得出结果")
+                continue
+            rows_f, n_days = an.r2_filtered(off, view)
             out.r2_filtered += [
-                {"set_id": set_id, "off_set_id": off_vs.set_id, **r} for r in rows_f
+                {"set_id": vs.set_id, "off_set_id": off_vs.set_id, **r} for r in rows_f
             ]
             out.r2_filtered_days += n_days
-    d = ctx.sink.set_dir(ctx.run_dir, set_id)
-    ctx.sink.write_csv(d / "events.csv", ["set_id", *EVENT_COLUMNS], events_all)
-    ctx.sink.write_csv(d / "episodes.csv", ["set_id", *EPISODE_COLUMNS], episodes_all)
-    ctx.sink.write_csv_gz(d / "daily_compact.csv.gz", COMPACT_COLUMNS, compact)
-    if not vs.is_baseline:
-        ctx.sink.write_csv_gz(
-            d / f"coverage_daily_{set_id}.csv.gz", COVERAGE_COLUMNS, coverage_rows
+    if emit:
+        rows.write(ctx.sink, ctx.run_dir, with_compare=not vs.is_baseline)
+        if out.max_day is not None and out.max_day > PERIOD_END:
+            out.checks.append(f"{vs.set_id}：回放结果出现 {out.max_day}，晚于 2019-12-31")
+    return out, views
+
+
+def _record_target(
+    ctx: WorkerContext,
+    vs: VariantSet,
+    p: PreparedSymbol,
+    rep: SymbolReplay,
+    result: RunResult,
+    view: RunView,
+    out: SetOutcome,
+    rows: SetRows,
+) -> None:
+    """一套 × 一个对象：不变量、明细行、负担、逐日等级与时间线。"""
+    set_id, label = vs.set_id, p.target.label
+    out.violations += [
+        f"{set_id}/{label}: {v}" for v in check_invariants(result.results, rep.params)
+    ]
+    last = view.days[-1]
+    out.max_day = last if out.max_day is None or last > out.max_day else out.max_day
+    if (set_id, label) in ctx.digest_ids:
+        out.digests[label] = discrete_digest(result)
+    rows.add_target(rep, result, view, ctx.run_id)
+    fu = release_followups(view)
+    out.followups += [{"set_id": set_id, **f} for f in fu]
+    out.unreleased += [{"set_id": set_id, **u} for u in unreleased(view)]
+    out.burden.append({"set_id": set_id, **burden_row(view, fu)})
+    out.levels[label] = levels_code(view)
+    if set_id in ctx.timeline_ids:
+        ctx.sink.write_full(
+            ctx.run_dir,
+            set_id,
+            label,
+            daily_rows(rep, ctx.run_id),
+            build_chart_data(rep, ctx.run_id, ctx.background),
         )
-        cols = sorted({k for r in compare_rows for k in r}, key=_compare_order)
-        ctx.sink.write_csv(d / f"event_compare_{set_id}.csv", cols, compare_rows)
-        ctx.sink.write_csv(
-            d / f"overlap_{set_id}.csv",
-            OVERLAP_COLUMNS,
-            [dict(zip(OVERLAP_COLUMNS, r, strict=True)) for r in overlap_all],
-        )
-    if out.max_day is not None and out.max_day > PERIOD_END:
-        out.checks.append(f"{set_id}：回放结果出现 {out.max_day}，晚于 2019-12-31")
-    return out
+        if p.target.symbol in TIMELINE_STOCKS:
+            out.timeline += timeline_rows(set_id, view, result)
 
 
-_ORDER = [
-    "target",
-    "direction",
-    "event_type",
-    "date",
-    "episode_id",
-    "close",
-    "other_status",
-    "other_episode_id",
-    "first_20",
-    "wait_20",
-    "min_close_rel_20",
-    "end_close_rel_20",
-    "first_60",
-    "wait_60",
-    "min_close_rel_60",
-    "end_close_rel_60",
-    "partner_episode_id",
-    "partner_end_date",
-    "partner_end_reason",
-    "release_day_diff",
-    "tags",
-]
-
-
-def _compare_order(k: str) -> int:
-    return _ORDER.index(k) if k in _ORDER else len(_ORDER)
-
-
-def _coverage_check(
-    set_id: str, label: str, base: RunView, new: RunView, rows: Sequence[Mapping[str, Any]]
-) -> list[str]:
-    """事件对照表覆盖每个 V0 START 与每个新变体 START（统计期间内）。"""
-    problems = []
-    for view, direction in ((base, "V0→新"), (new, "新→V0")):
-        starts = {
-            e.day.isoformat()
-            for e in view.events
-            if e.type.value == "START" and view.in_period(view.index[e.day])
-        }
-        listed = {
-            r["date"] for r in rows if r["direction"] == direction and r["event_type"] == "START"
-        }
-        if starts != listed:
-            problems.append(f"{set_id}/{label}：事件对照表缺少 {direction} 的 START")
-    return problems
+def _compare_target(
+    vs: VariantSet, label: str, base: RunView, view: RunView, out: SetOutcome, rows: SetRows
+) -> None:
+    """新变体与同组 V0 的逐日覆盖、事件对照、重叠与专项清单。"""
+    set_id = vs.set_id
+    cov_rows, cells, excluded = an.coverage(base, view)
+    rows.coverage += cov_rows
+    out.coverage_cells.append({"set_id": set_id, "target": label, **cells})
+    if sum(cells[k] for k in ("both", "only_v0", "only_new", "neither")) != cells["common_days"]:
+        out.checks.append(f"{set_id}/{label}：覆盖四格之和不等于共同可计算日数")
+    out.excluded += excluded
+    cmp_rows = an.event_compare(base, view)
+    rows.compare += cmp_rows
+    out.checks += coverage_check(set_id, label, base, view, cmp_rows)
+    rows.overlap += an.overlap_rows(base, view, an.overlaps(base, view))
+    out.cancelled_escalations += [
+        {"set_id": set_id, **r} for r in an.cancelled_escalations(base, view)
+    ]
+    out.l_starts += [{"set_id": set_id, **r} for r in an.l_path_starts(base, view)]
+    if vs.variant == "V1":
+        out.l_release_no_rise += [{"set_id": set_id, **r} for r in an.l_release_without_rise(view)]

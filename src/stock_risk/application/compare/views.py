@@ -9,7 +9,8 @@ from dataclasses import dataclass
 from datetime import date
 
 from stock_risk.application.replay import SymbolReplay
-from stock_risk.application.replay_outputs import EpisodeRow, closes_by_day, episode_rows
+from stock_risk.application.replay_episodes import EpisodeRow, episode_rows
+from stock_risk.application.replay_outputs import closes_by_day
 from stock_risk.domain.lifecycle.model import DataStatus, Event, EventType, Level
 
 PERIOD_START = date(2010, 1, 1)

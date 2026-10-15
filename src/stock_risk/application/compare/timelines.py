@@ -88,6 +88,21 @@ def timeline_rows(set_id: str, view: RunView, result: RunResult) -> list[dict[st
     return rows
 
 
+TIMELINE_COLUMNS = [
+    "set_id",
+    "target",
+    "year",
+    "kind",
+    "date",
+    "event_type",
+    "level_before",
+    "level_after",
+    "reasons",
+    "close",
+    "detail",
+]
+
+
 def build_timelines(
     sink: TimelineSink,
     run_dir: Path,
@@ -97,48 +112,25 @@ def build_timelines(
     v3: VariantSet,
 ) -> dict[str, Any]:
     """T06c：两套并排的单股年度通知时间线，并与 events.csv 做一致性检查。"""
-    rows = [r for sid in (v0.set_id, v3.set_id) if sid in outcomes for r in outcomes[sid].timeline]
+    sids = [sid for sid in (v0.set_id, v3.set_id) if sid in outcomes]
     groups: dict[tuple[str, int], list[dict[str, Any]]] = defaultdict(list)
-    for r in rows:
+    for r in (r for sid in sids for r in outcomes[sid].timeline):
         groups[(r["target"], r["year"])].append(r)
-    problems, files = [], []
     events = {
         sid: {
             (e["target"], e["date"], e["event_type"])
             for e in sink.read_csv(sink.set_dir(run_dir, sid) / "events.csv")
         }
-        for sid in (v0.set_id, v3.set_id)
-        if sid in outcomes
+        for sid in sids
     }
+    problems, files = [], []
     tl_dir = run_dir / "timelines"
     for (target, year), items in sorted(groups.items()):
-        for r in items:
-            if r["kind"] == "通知" and (
-                r["target"],
-                r["date"],
-                r["event_type"],
-            ) not in events.get(r["set_id"], set()):
-                problems.append(
-                    f"时间线 {target} {year}：{r['date']} {r['event_type']} "
-                    f"不在 {r['set_id']} 的 events.csv 中"
-                )
+        problems += _not_in_events(target, year, items, events)
         name = f"{target.split('_')[0]}_{year}.csv"
-        cols = [
-            "set_id",
-            "target",
-            "year",
-            "kind",
-            "date",
-            "event_type",
-            "level_before",
-            "level_after",
-            "reasons",
-            "close",
-            "detail",
-        ]
         tl_dir.mkdir(parents=True, exist_ok=True)
         ordered = sorted(items, key=lambda r: (r["kind"] != "年初状态", r["date"], r["set_id"]))
-        sink.write_csv(tl_dir / name, cols, ordered)
+        sink.write_csv(tl_dir / name, TIMELINE_COLUMNS, ordered)
         files.append(
             {
                 "file": name,
@@ -150,3 +142,18 @@ def build_timelines(
         )
     sink.write_timeline_index(run_dir, run_id, files)
     return {"files": [f["file"] for f in files], "problems": problems}
+
+
+def _not_in_events(
+    target: str,
+    year: int,
+    items: list[dict[str, Any]],
+    events: Mapping[str, set[tuple[str, str, str]]],
+) -> list[str]:
+    """时间线中的每条通知都应出现在该套的 events.csv 中。"""
+    return [
+        f"时间线 {target} {year}：{r['date']} {r['event_type']} 不在 {r['set_id']} 的 events.csv 中"
+        for r in items
+        if r["kind"] == "通知"
+        and (r["target"], r["date"], r["event_type"]) not in events.get(r["set_id"], set())
+    ]

@@ -22,6 +22,21 @@ def _listing_text(s: SymbolAudit) -> str:
 
 
 def render_summary(r: AuditReport) -> str:
+    lines = _header(r)
+    for section in (
+        _failures_section,
+        _jumps_section,
+        _gaps_section,
+        _zero_volume_section,
+        _junctions_section,
+        _manifest_section,
+        _corrections_section,
+    ):
+        lines += section(r)
+    return "\n".join(lines) + "\n"
+
+
+def _header(r: AuditReport) -> list[str]:
     lines = [
         f"# 原始数据审计 {r.run_date}",
         "",
@@ -48,66 +63,70 @@ def render_summary(r: AuditReport) -> str:
             f"{s.rows_outside_listing} | {len(s.failures)} | {len(s.factor_jumps)} | "
             f"{len(s.gaps)} | {len(s.zero_volume)} | {s.sealed_rows} |"
         )
+    return lines
 
-    lines += ["", "## 明确失败（v0.4 §2.0）", ""]
+
+def _failures_section(r: AuditReport) -> list[str]:
+    lines = ["", "## 明确失败（v0.4 §2.0）", ""]
     fails = [(s, f) for s in r.symbols for f in s.failures]
     if not fails:
-        lines.append("无。")
-    else:
-        lines += ["| 代码 | 日期 | 口径 | 类型 | 明细 |", "| --- | --- | --- | --- | --- |"]
-        lines += [
-            f"| {s.symbol} | {f.day} | {f.basis or 'volume'} | {f.kind} | {f.detail} |"
-            for s, f in fails
-        ]
+        return [*lines, "无。"]
+    lines += ["| 代码 | 日期 | 口径 | 类型 | 明细 |", "| --- | --- | --- | --- | --- |"]
+    return lines + [
+        f"| {s.symbol} | {f.day} | {f.basis or 'volume'} | {f.kind} | {f.detail} |"
+        for s, f in fails
+    ]
 
-    lines += ["", "## 复权系数跳变（当天无公司行动记录）", ""]
+
+def _jumps_section(r: AuditReport) -> list[str]:
+    lines = ["", "## 复权系数跳变（当天无公司行动记录）", ""]
     jumps = [(s, j) for s in r.symbols for j in s.factor_jumps]
     if not jumps:
-        lines.append("无。")
-    else:
-        lines += ["| 代码 | 日期 | 前一日 | 系数变化 |", "| --- | --- | --- | --- |"]
-        lines += [f"| {s.symbol} | {j.day} | {j.prev_day} | {j.change:+.2%} |" for s, j in jumps]
+        return [*lines, "无。"]
+    lines += ["| 代码 | 日期 | 前一日 | 系数变化 |", "| --- | --- | --- | --- |"]
+    return lines + [f"| {s.symbol} | {j.day} | {j.prev_day} | {j.change:+.2%} |" for s, j in jumps]
 
-    lines += ["", "## 交易日缺口", ""]
+
+def _gaps_section(r: AuditReport) -> list[str]:
+    lines = ["", "## 交易日缺口", ""]
     gapped = [s for s in r.symbols if s.gaps]
     if not gapped:
-        lines.append("无。")
-    else:
-        lines += ["| 代码 | 检查区间 | 缺口天数 | 日期 |", "| --- | --- | --- | --- |"]
-        lines += [
-            f"| {s.symbol} | {s.gap_start} ~ {s.gap_end} | {len(s.gaps)} | "
-            f"{', '.join(str(d) for d in s.gaps)} |"
-            for s in gapped
-        ]
+        return [*lines, "无。"]
+    lines += ["| 代码 | 检查区间 | 缺口天数 | 日期 |", "| --- | --- | --- | --- |"]
+    return lines + [
+        f"| {s.symbol} | {s.gap_start} ~ {s.gap_end} | {len(s.gaps)} | "
+        f"{', '.join(str(d) for d in s.gaps)} |"
+        for s in gapped
+    ]
 
-    lines += ["", "## 零成交量", ""]
+
+def _zero_volume_section(r: AuditReport) -> list[str]:
+    lines = ["", "## 零成交量", ""]
     zv = [s for s in r.symbols if s.zero_volume]
     if not zv:
-        lines.append("无。")
-    else:
-        lines += [f"- {s.symbol}：{', '.join(str(d) for d in s.zero_volume)}" for s in zv]
+        return [*lines, "无。"]
+    return lines + [f"- {s.symbol}：{', '.join(str(d) for d in s.zero_volume)}" for s in zv]
 
-    lines += ["", "## 拼接点", ""]
+
+def _junctions_section(r: AuditReport) -> list[str]:
+    lines = ["", "## 拼接点", ""]
     js = [j for s in r.symbols for j in s.junctions]
     if not js:
-        lines.append("无。")
-    else:
-        lines += [
-            "| 代码 | 前段 → 后段 | 前段末日 | 后段首日 | 前收 | 后开 | 后开/前收 "
-            "| 系数前 | 系数后 | 系数变化 |",
-            "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
-        ]
-        lines += [
-            f"| {j.symbol} | {j.prev_ticker} → {j.next_ticker} | {j.prev_day} | {j.next_day} | "
-            f"{fmt_value(j.prev_close, 4)} | {fmt_value(j.next_open, 4)} | "
-            f"{fmt_value(j.open_to_close_ratio, 4)} | "
-            f"{fmt_value(j.prev_adj_factor)} | {fmt_value(j.next_adj_factor)} | "
-            + (f"{j.adj_factor_change:+.4%}" if j.adj_factor_change is not None else "")
-            + " |"
-            for j in js
-        ]
-    lines += _manifest_section(r) + _corrections_section(r)
-    return "\n".join(lines) + "\n"
+        return [*lines, "无。"]
+    lines += [
+        "| 代码 | 前段 → 后段 | 前段末日 | 后段首日 | 前收 | 后开 | 后开/前收 "
+        "| 系数前 | 系数后 | 系数变化 |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+    ]
+    return lines + [
+        f"| {j.symbol} | {j.prev_ticker} → {j.next_ticker} | {j.prev_day} | {j.next_day} | "
+        f"{fmt_value(j.prev_close, 4)} | {fmt_value(j.next_open, 4)} | "
+        f"{fmt_value(j.open_to_close_ratio, 4)} | "
+        f"{fmt_value(j.prev_adj_factor)} | {fmt_value(j.next_adj_factor)} | "
+        + (f"{j.adj_factor_change:+.4%}" if j.adj_factor_change is not None else "")
+        + " |"
+        for j in js
+    ]
 
 
 def _manifest_section(r: AuditReport) -> list[str]:

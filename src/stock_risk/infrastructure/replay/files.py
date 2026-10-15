@@ -7,10 +7,7 @@
 
 from __future__ import annotations
 
-import csv
 import html
-import io
-import json
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -23,24 +20,8 @@ from stock_risk.infrastructure.replay.chart import (
     render_chart,
     write_plotly_js,
 )
-
-
-def _fmt(v: Any) -> Any:
-    if isinstance(v, float):
-        return f"{v:.10g}"
-    return v
-
-
-def _write_csv(path: Path, columns: Sequence[str], rows: Sequence[Mapping[str, Any]]) -> None:
-    with path.open("w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=list(columns), extrasaction="ignore")
-        w.writeheader()
-        w.writerows({k: _fmt(r.get(k, "")) for k in columns} for r in rows)
-
-
-def _read_csv(path: Path) -> list[dict[str, str]]:
-    with path.open(encoding="utf-8", newline="") as f:
-        return list(csv.DictReader(f))
+from stock_risk.infrastructure.replay.csv_io import format_rows, read_csv, write_csv
+from stock_risk.infrastructure.replay.csv_io import write_manifest as _write_manifest
 
 
 class ReplayFileSink:
@@ -70,9 +51,9 @@ class ReplayFileSink:
     ) -> Path:
         d = self.target_dir(run_dir, candidate_id, label)
         d.mkdir(parents=True, exist_ok=False)
-        _write_csv(d / "events.csv", EVENT_COLUMNS, events)
-        _write_csv(d / "daily.csv", DAILY_COLUMNS, daily)
-        _write_csv(d / "episodes.csv", EPISODE_COLUMNS, episodes)
+        write_csv(d / "events.csv", EVENT_COLUMNS, events)
+        write_csv(d / "daily.csv", DAILY_COLUMNS, daily)
+        write_csv(d / "episodes.csv", EPISODE_COLUMNS, episodes)
         write_plotly_js(run_dir)
         render_chart(chart, d / "chart.html", f"../../{PLOTLY_JS}")
         return d
@@ -85,9 +66,9 @@ class ReplayFileSink:
         """读回写出的四种输出（一致性检查用）。"""
         d = self.target_dir(run_dir, candidate_id, label)
         return (
-            _read_csv(d / "events.csv"),
-            _read_csv(d / "daily.csv"),
-            _read_csv(d / "episodes.csv"),
+            read_csv(d / "events.csv"),
+            read_csv(d / "daily.csv"),
+            read_csv(d / "episodes.csv"),
             read_chart_events(d / "chart.html"),
         )
 
@@ -95,19 +76,14 @@ class ReplayFileSink:
         self, columns: Sequence[str], rows: Sequence[Mapping[str, Any]]
     ) -> list[dict[str, str]]:
         """按写 CSV 时的同一规则格式化后、经过 CSV 往返的结果（V0 回归比较用）。"""
-        buf = io.StringIO()
-        w = csv.DictWriter(buf, fieldnames=list(columns), extrasaction="ignore")
-        w.writeheader()
-        w.writerows({k: _fmt(r.get(k, "")) for k in columns} for r in rows)
-        buf.seek(0)
-        return list(csv.DictReader(buf))
+        return format_rows(columns, rows)
 
     def read_tables(
         self, run_dir: Path, candidate_id: int, label: str
     ) -> dict[str, list[dict[str, str]]]:
         """读取某次运行中一个（候选, 对象）的 events、daily、episodes。"""
         d = self.target_dir(run_dir, candidate_id, label)
-        return {name: _read_csv(d / f"{name}.csv") for name in ("events", "daily", "episodes")}
+        return {name: read_csv(d / f"{name}.csv") for name in ("events", "daily", "episodes")}
 
     def write_summary(
         self, run_dir: Path, rows: Sequence[Mapping[str, Any]], by_candidate: Sequence[Mapping]
@@ -116,16 +92,12 @@ class ReplayFileSink:
         for name, data in (("summary.csv", rows), ("summary_by_candidate.csv", by_candidate)):
             if data:
                 cols = [k for k in data[0] if not k.startswith("_")]
-                _write_csv(run_dir / name, cols, data)
+                write_csv(run_dir / name, cols, data)
                 out.append(run_dir / name)
         return out
 
     def write_manifest(self, run_dir: Path, manifest: Mapping[str, Any]) -> Path:
-        path = run_dir / "run_manifest.json"
-        path.write_text(
-            json.dumps(manifest, ensure_ascii=False, indent=2, default=str) + "\n", "utf-8"
-        )
-        return path
+        return _write_manifest(run_dir, manifest)
 
     def write_index(
         self, run_dir: Path, run_id: str, run_kind: str, cells: Sequence[Mapping[str, Any]]
