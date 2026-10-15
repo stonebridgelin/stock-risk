@@ -16,15 +16,13 @@ from pathlib import Path
 from typing import Any
 
 from stock_risk.application.replay_chart_data import ChartData
-from stock_risk.application.replay_outputs import DAILY_FIELDS, EPISODE_COLUMNS, EVENT_COLUMNS
+from stock_risk.application.replay_outputs import DAILY_COLUMNS, EPISODE_COLUMNS, EVENT_COLUMNS
 from stock_risk.infrastructure.replay.chart import (
     PLOTLY_JS,
     read_chart_events,
     render_chart,
     write_plotly_js,
 )
-
-DAILY_COLUMNS = ["run_id", "candidate_id", "target", *DAILY_FIELDS, "close"]
 
 
 def _fmt(v: Any) -> Any:

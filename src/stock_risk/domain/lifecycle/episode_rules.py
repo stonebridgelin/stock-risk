@@ -47,6 +47,7 @@ def observation_reset(ep: Episode, day: date) -> Episode:
         xc=0,
         dc_segment=(),
         rc_segment=(),
+        xc_segment=(),
     )
 
 

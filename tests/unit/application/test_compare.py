@@ -17,9 +17,10 @@ from stock_risk.application.compare.variants import (
     timeline_sets,
     variant_sets,
 )
-from stock_risk.application.compare.views import build_view, window_after
+from stock_risk.application.compare.views import _status, build_view, window_after
 from stock_risk.application.replay import ReplayTarget
 from stock_risk.application.replay_run import GitState
+from stock_risk.domain.lifecycle.model import DataStatus, Level
 from stock_risk.infrastructure.replay.compare_files import CompareFileSink
 from tests.unit.application.test_replay_run import FakeEnv, service  # noqa: F401  (fixture)
 
@@ -179,3 +180,17 @@ def test_git_state_formal_requires_full_run(service, tmp_path: Path) -> None:  #
 
 
 pytestmark = pytest.mark.filterwarnings("ignore::DeprecationWarning")
+
+
+@pytest.mark.parametrize(
+    ("level", "expect"),
+    [
+        (None, "缺价冻结（正常）"),
+        (Level.WATCH, "缺价冻结（关注）"),
+        (Level.ALERT, "缺价冻结（警戒）"),
+    ],
+)
+def test_missing_day_status_keeps_frozen_level(level: Level | None, expect: str) -> None:
+    """B-04：对照视图中缺价日的状态保留冻结时的等级。"""
+    assert _status(DataStatus.MISSING, level) == expect
+    assert _status(DataStatus.HAS_BAR, Level.ALERT) == "警戒"

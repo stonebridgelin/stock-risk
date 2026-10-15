@@ -59,6 +59,8 @@ def step(
     replay_start: date | None = None,
 ) -> StepResult:
     in_replay = replay_start is None or day >= replay_start
+    if not in_replay and state.episode is not None:  # T08a B-07
+        raise InvalidInputError(f"{day}: 回放起点 {replay_start} 之前有进行中的预警")
     if not src.has_bar(day):
         return _missing_day(state, day, params, in_replay)
 
@@ -113,7 +115,7 @@ def _missing_day(
     )
     if m <= g:
         if ep is not None:
-            if ep.prev_confirm:
+            if ep.prev_confirm and in_replay:
                 events.append(
                     Event(
                         EventType.RECOVERY_REVOKED,
@@ -131,7 +133,7 @@ def _missing_day(
         extra["transition"] = "T1"
         status = DataStatus.MISSING
     elif m == g + 1:
-        if ep is not None:
+        if ep is not None and in_replay:
             events.append(
                 Event(
                     EventType.DATA_BREAK,

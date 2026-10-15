@@ -10,7 +10,8 @@
 
   缺价日不进分子也不进分母，其中等级冻结为关注 / 警戒的缺价日另报；数据中断、不可计算日数分别列出。
 - 恢复观察、撤销、恢复失败等事件次数按事件日期计（2010-01-01 起）。
-- 解除后再次启动的间隔：解除日在汇总期内、其后有下一次启动的，按交易日计。
+- 解除后再次启动的间隔：解除日在汇总期内、紧邻的下一次启动的间隔，按有日线的交易日计
+  （domain.lifecycle.restart，T08a C-06）。
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ from typing import Any
 from stock_risk.application.replay import SymbolReplay
 from stock_risk.application.replay_outputs import EpisodeRow
 from stock_risk.domain.lifecycle.model import DataStatus, EndReason, EventType
+from stock_risk.domain.lifecycle.restart import EpisodeSpan, bar_days, restart_gaps
 
 SUMMARY_START = date(2010, 1, 1)
 SUMMARY_END = date(2019, 12, 31)
@@ -56,7 +58,6 @@ def _in_period(d: date | None) -> bool:
 
 def summarize(rep: SymbolReplay, episodes: Iterable[EpisodeRow]) -> dict[str, Any]:
     results = rep.result.results
-    days = [r.record.day for r in results]
     row: dict[str, Any] = {
         "candidate_id": rep.candidate_id,
         "target": rep.target.label,
@@ -117,11 +118,13 @@ def summarize(rep: SymbolReplay, episodes: Iterable[EpisodeRow]) -> dict[str, An
         )
 
     ordered_eps = sorted(eps, key=lambda e: e.start_date)
-    gaps = []
-    for prev, nxt in zip(ordered_eps, ordered_eps[1:], strict=False):
-        if prev.end_reason is EndReason.RELEASE and _in_period(prev.end_date):
-            assert prev.end_date is not None
-            gaps.append(days.index(nxt.start_date) - days.index(prev.end_date))
+    spans = [EpisodeSpan(e.start_date, e.end_date, e.end_reason) for e in ordered_eps]
+    all_gaps = restart_gaps(spans, bar_days([r.record for r in results]))
+    gaps = [
+        g
+        for prev, g in zip(ordered_eps, all_gaps[1:], strict=False)
+        if g is not None and _in_period(prev.end_date)
+    ]
     row |= describe(gaps, "restart_gap")
     row["_restart_gaps"] = gaps
     return row

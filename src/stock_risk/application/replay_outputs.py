@@ -17,8 +17,12 @@ from stock_risk.domain.lifecycle.model import (
     EventType,
     Level,
 )
+from stock_risk.domain.lifecycle.restart import EpisodeSpan, days_since_prev_release
 
 DAILY_FIELDS = [f.name for f in fields(DailyRecord)]
+# 缺价日的说明（T08a B-04）：display 列保持冻结的显示状态（V0 回归逐值比较），另加 data_note 列
+MISSING_NOTE = "当日缺价，状态未更新"
+DAILY_COLUMNS = ["run_id", "candidate_id", "target", *DAILY_FIELDS, "close", "data_note"]
 EVENT_COLUMNS = [
     "run_id",
     "candidate_id",
@@ -35,6 +39,7 @@ EVENT_COLUMNS = [
     "segment",
     "values",
     "values_v08",  # v0.8 新增的 START 数值（第 1A.3 节）；原有列不变
+    "xc_segment",  # T08a B-06：DIRECT 解除时 xc 计数段内每日的证据
 ]
 EPISODE_COLUMNS = [
     "run_id",
@@ -113,6 +118,7 @@ def daily_rows(rep: SymbolReplay, run_id: str) -> list[dict[str, Any]]:
         row = {"run_id": run_id, "candidate_id": rep.candidate_id, "target": rep.target.label}
         row.update({k: _cell(rec[k]) for k in DAILY_FIELDS})
         row["close"] = _cell(closes.get(r.record.day))
+        row["data_note"] = MISSING_NOTE if r.record.data_status is DataStatus.MISSING else ""
         out.append(row)
     return out
 
@@ -135,6 +141,7 @@ def event_rows(rep: SymbolReplay, run_id: str) -> list[dict[str, Any]]:
         basis.pop("reason", None)
         today = basis.pop("today_evidence", None)
         segment = basis.pop("segment", None)
+        xc_segment = basis.pop("xc_segment", None)
         v08 = basis.pop("v08", None)
         before, after = levels[e.day]
         out.append(
@@ -156,6 +163,9 @@ def event_rows(rep: SymbolReplay, run_id: str) -> list[dict[str, Any]]:
                 "segment": "" if segment is None else json.dumps(segment, ensure_ascii=False),
                 "values": json.dumps(_jsonable(basis), ensure_ascii=False),
                 "values_v08": "" if v08 is None else json.dumps(_jsonable(v08), ensure_ascii=False),
+                "xc_segment": ""
+                if xc_segment is None
+                else json.dumps(xc_segment, ensure_ascii=False),
             }
         )
     return out
@@ -250,7 +260,8 @@ def episode_rows(rep: SymbolReplay) -> list[EpisodeRow]:
 def _link_previous(
     rows: list[EpisodeRow], days: list[date], closes: Mapping[date, float]
 ) -> list[EpisodeRow]:
-    """第 1A.7 节的关联字段：只是输出字段，不改变状态机。"""
+    """第 1A.7 节的关联字段：只是输出字段，不改变状态机。距上一次解除的口径见
+    domain.lifecycle.restart（T08a C-06）。"""
     valid = [d for d in days if d in closes]
     linked: list[EpisodeRow] = []
     prev: EpisodeRow | None = None
@@ -258,9 +269,8 @@ def _link_previous(
         if prev is None:
             linked.append(row)
         else:
-            gap = None
-            if prev.end_reason is EndReason.RELEASE and prev.end_date is not None:
-                gap = sum(1 for d in valid if prev.end_date < d <= row.start_date)
+            span = EpisodeSpan(prev.start_date, prev.end_date, prev.end_reason)
+            gap = days_since_prev_release(span, row.start_date, valid)
             below = (
                 None
                 if row.start_close is None or prev.low_close is None

@@ -12,6 +12,7 @@ from stock_risk.application.market_data_loader import MarketDataLoader
 from stock_risk.application.replay import CORRECTED, UNCORRECTED, ReplayService, ReplayTarget
 from stock_risk.application.replay_chart_data import build_chart_data, drawdown_63
 from stock_risk.application.replay_outputs import (
+    MISSING_NOTE,
     check_consistency,
     daily_rows,
     episode_csv_rows,
@@ -133,6 +134,8 @@ def test_replay_ranges_censoring_and_outputs_consistent(service: ReplayService) 
     bad = [dict(ev[0], date="2008-01-03"), *ev[1:]]
     assert check_consistency(bad, dy, ep, marks)
     assert any(r["data_status"] == "MISSING" for r in dy)  # 2010-03-03 缺价
+    # B-04：缺价日另加说明列，display 列保持冻结的显示状态
+    assert all((r["data_note"] == MISSING_NOTE) == (r["data_status"] == "MISSING") for r in dy)
 
 
 def test_listing_end_censor_and_correction_variants(service: ReplayService) -> None:

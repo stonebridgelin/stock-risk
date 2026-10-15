@@ -46,8 +46,9 @@ class RunView:
 
 
 def _status(data_status: DataStatus, level: Level | None) -> str:
-    if data_status is DataStatus.MISSING:
-        return MISSING
+    if data_status is DataStatus.MISSING:  # T08a B-04：保留冻结时的等级
+        frozen = ALERT if level is Level.ALERT else WATCH if level is Level.WATCH else NORMAL
+        return f"{MISSING}（{frozen}）"
     if data_status is DataStatus.DATA_BREAK:
         return BREAK
     if data_status is DataStatus.INSUFFICIENT:

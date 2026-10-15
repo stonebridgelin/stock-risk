@@ -34,6 +34,21 @@ class AtrBasis(StrEnum):
     MIN = "MIN"
 
 
+class InvalidParameter(ValueError):
+    """参数取值不合法（T08a A-06：有限值、正整数、大小关系）。构造时报错，不自动调整。"""
+
+
+def _positive_int(name: str, v: object) -> None:
+    if isinstance(v, bool) or not isinstance(v, int) or v < 1:
+        raise InvalidParameter(f"{name} 必须是正整数，实际 {v!r}")
+
+
+def _finite(name: str, v: object) -> float:
+    if isinstance(v, bool) or not isinstance(v, int | float) or not math.isfinite(v):
+        raise InvalidParameter(f"{name} 必须是有限数值，实际 {v!r}")
+    return float(v)
+
+
 @dataclass(frozen=True, slots=True)
 class Candidate:
     """一个候选（第 4.1 节的 9 个维度）。"""
@@ -47,6 +62,14 @@ class Candidate:
     confirm: Confirm
     release_path: ReleasePath
     atr_basis: AtrBasis
+
+    def __post_init__(self) -> None:
+        for name in ("n", "k", "d"):
+            _positive_int(name, getattr(self, name))
+        k1, k2 = _finite("k1", self.k1), _finite("k2", self.k2)
+        _finite("u_rel", self.u_rel)
+        if not 0 < k1 < k2:
+            raise InvalidParameter(f"必须 0 < k₁ < k₂，实际 k₁ = {k1}、k₂ = {k2}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,6 +103,13 @@ class ExplorationAssumptions:
             raise IllegalCombination(f"违反约束 5：0 < h ≤ 1，实际 h = {self.h}")
         if self.w_long < 1:
             raise IllegalCombination(f"W_L 必须为正整数，实际 {self.w_long}")
+        phi = _finite("phi", self.phi)
+        if not 0 < phi <= 1:
+            raise InvalidParameter(f"必须 0 < φ ≤ 1，实际 φ = {phi}")
+        _positive_int("k_stab", self.k_stab)
+        _positive_int("gap_break", self.gap_break)  # G ≥ 1
+        if self.k_stab < 5:  # K_stab ≥ max(5, K)：K 在 EngineParams 中检查
+            raise InvalidParameter(f"必须 K_stab ≥ 5，实际 {self.k_stab}")
 
 
 EXPLORATION_ASSUMPTIONS = ExplorationAssumptions()
@@ -145,6 +175,22 @@ class V08Switches:
     def is_v0(self) -> bool:
         return self == V0_SWITCHES
 
+    def formal_violations(self, h: float) -> tuple[str, ...]:
+        """可参与选参的正式组合约束（T08a A-06；处置稿 A-06）。返回违反项，空表示是正式组合。
+
+        引擎仍允许对照组合（V1、V2 等），本检查只供以后的选参使用。
+        """
+        out: list[str] = []
+        if self.long_path is not LongPath.OFF and self.release_hyst is not ReleaseHyst.EFFECTIVE:
+            out.append("long_path ≠ OFF 时 release_hyst 必须为 EFFECTIVE")
+        if (self.x2 > 0) != self.t11_full:
+            out.append("x₂ > 0 与 t11_full = ON 必须同时成立或同时不成立")
+        if self.x2 > 0 and self.x1 == 0:
+            out.append("x₂ > 0 时 x₁ 必须 > 0")
+        if not 0 < h < 1:
+            out.append(f"必须 0 < h < 1，实际 h = {h}")
+        return tuple(out)
+
 
 V0_SWITCHES = V08Switches()
 
@@ -156,6 +202,16 @@ class EngineParams:
     fixed: FixedValues = FIXED
     tol: Tolerances = field(default=DEFAULT_TOLERANCES)
     switches: V08Switches = V0_SWITCHES
+
+    def __post_init__(self) -> None:
+        k_stab, k = self.assumptions.k_stab, self.candidate.k
+        if k_stab < max(5, k):
+            raise InvalidParameter(f"必须 K_stab ≥ max(5, K)，实际 K_stab = {k_stab}、K = {k}")
+
+    @property
+    def is_formal_candidate(self) -> bool:
+        """开关与 h 是否构成可参与选参的正式组合（见 V08Switches.formal_violations）。"""
+        return not self.switches.formal_violations(self.assumptions.h)
 
 
 # 第 4.1 节：维度自上而下、候选值按表中顺序；网格序号按字典序编号 1–768

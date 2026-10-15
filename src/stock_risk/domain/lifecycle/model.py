@@ -117,6 +117,7 @@ class Episode:
     xc: int = 0
     dc_segment: tuple[frozenset[str], ...] = ()  # 当前 dc 计数段内每日的证据集合
     rc_segment: tuple[frozenset[str], ...] = ()
+    xc_segment: tuple[frozenset[str], ...] = ()  # 当前 xc 计数段内每日的证据集合（T08a B-06）
     obs_n: int = 0  # 本周期已发出的 RECOVERY_OBS 次数；obs_issued = obs_n > 0
     stabilized: bool = False  # 本周期是否已发 STABILIZED
     prev_confirm: bool = False

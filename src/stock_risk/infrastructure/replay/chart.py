@@ -15,6 +15,7 @@ from plotly.offline import get_plotlyjs
 from plotly.subplots import make_subplots
 
 from stock_risk.application.replay_chart_data import ChartData
+from stock_risk.application.replay_outputs import MISSING_NOTE
 
 PLOTLY_JS = "plotly.min.js"
 EVENT_TRACE = "事件"
@@ -86,13 +87,18 @@ def render_chart(data: ChartData, path: Path, plotly_js_rel: str) -> None:
                 x=[d.isoformat() for d in data.missing_days],
                 y=[None] * len(data.missing_days),
                 mode="markers",
-                name="缺价日",
+                name=f"缺价日（{MISSING_NOTE}）",
+                text=[MISSING_NOTE] * len(data.missing_days),
+                hovertemplate="%{x}<br>%{text}<extra></extra>",
             ),
             row=1,
             col=1,
         )
         for d in data.missing_days:
-            fig.add_vline(x=d.isoformat(), line={"color": "#6c757d", "width": 1, "dash": "dot"})
+            fig.add_vline(
+                x=d.isoformat(),
+                line={"color": "#6c757d", "width": 1, "dash": "dot"},
+            )
     fig.add_trace(
         go.Scatter(x=x, y=data.d_t, name="D_T（无预警）", line={"color": "#6c757d", "width": 1}),
         row=2,

@@ -1,7 +1,8 @@
 """T06b 第 6 项：通知负担（每套每证券）。统计期间 2010-01-01 至 2019-12-31。纯函数。
 
 - 每有效证券年 = 期间内有日线的交易日数 / 252。
-- START 分为首次与短期再启动（距上次解除 ≤ 20 个有效交易日）。
+- START 分为首次与短期再启动（紧邻的前一次预警以解除结束，且距其解除 ≤ 20 个有日线的交易日；
+  口径见 domain.lifecycle.restart）。
 - 占用率 = 可计算日中处于关注或警戒的日数 ÷ 可计算日数（与 15 号第 5 节相同）。
 - 持续 ≥ 200 个交易日的预警：只统计开发期预警（启动日在期间内）。
 - 解除后 20、60 个有效交易日内的最低收盘、相对解除收盘的跌幅、是否跌破所解除预警的 L_ep；
@@ -16,6 +17,7 @@ from typing import Any
 
 from stock_risk.application.compare.views import RunView, window_after
 from stock_risk.domain.lifecycle.model import EventType
+from stock_risk.domain.lifecycle.restart import EpisodeSpan, restart_gaps
 
 YEAR_DAYS = 252
 SHORT_RESTART = 20
@@ -86,14 +88,16 @@ def burden_row(view: RunView, followups: Sequence[dict[str, Any]]) -> dict[str, 
         "valid_days": valid_days,
         "security_years": round(years, 6),
     }
-    releases = [view.index[e.day] for e in view.events_of(EventType.RELEASE)]
+    # 距紧邻前一次预警解除的有效交易日数（domain.lifecycle.restart，T08a C-06）
+    spans = [EpisodeSpan(e.start_date, e.end_date, e.end_reason) for e in view.episodes]
+    bars = [d for d, ok in zip(view.days, view.valid, strict=True) if ok]
+    gaps = dict(zip(sorted(s.start_day for s in spans), restart_gaps(spans, bars), strict=True))
     first = short = 0
     for e in view.events_of(EventType.START):
         i = view.index[e.day]
         if not view.in_period(i):
             continue
-        prev = [r for r in releases if r < i]
-        gap = sum(1 for j in range(prev[-1] + 1, i + 1) if view.valid[j]) if prev else None
+        gap = gaps[e.day]
         if gap is not None and gap <= SHORT_RESTART:
             short += 1
         else:
