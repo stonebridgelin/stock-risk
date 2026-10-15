@@ -14,6 +14,7 @@ from stock_risk.application.fetch_batch import BatchItem, FetchBatchService, Quo
 from stock_risk.application.fetch_raw_data import FetchRawDataService
 from stock_risk.application.market_data_loader import MarketDataLoader
 from stock_risk.application.probe_massive import ProbeMassiveService
+from stock_risk.application.probe_massive_followup import ProbeMassiveFollowupService
 from stock_risk.application.probe_tickers import ProbeTickersService
 from stock_risk.application.progress import ProgressFn, quiet
 from stock_risk.application.replay import ReplayService
@@ -40,6 +41,10 @@ from stock_risk.infrastructure.storage.csv_raw_repository import (
 )
 from stock_risk.infrastructure.storage.csv_universe_provider import CsvUniverseProvider
 from stock_risk.infrastructure.storage.fetch_batch_files import JsonQuotaStore, read_batch_list
+from stock_risk.infrastructure.storage.massive_followup_files import (
+    MassiveFollowupFiles,
+    read_reference_spans,
+)
 from stock_risk.infrastructure.storage.massive_probe_files import MassiveProbeFiles
 from stock_risk.infrastructure.storage.ranges_calendar_writers import (
     CalendarCheckFileWriter,
@@ -94,6 +99,28 @@ def build_probe_massive_service(
     return ProbeMassiveService(
         source=MassiveReference(settings.massive_api_key.reveal(), per_minute=rate),
         store=MassiveProbeFiles(out_dir),
+        clock=time.monotonic,
+        progress=progress,
+    )
+
+
+def build_probe_massive_followup_service(
+    settings: Settings,
+    out_dir: Path,
+    per_minute: int | None = None,
+    progress: ProgressFn = quiet,
+) -> ProbeMassiveFollowupService:
+    """Massive 追加探查（T08d-2a 第 2.4 节）。D 读取 T08d-1 的 Tiingo 探查输出，不发请求。"""
+    if not settings.massive_api_key:
+        raise SystemExit("未配置 MASSIVE_API_KEY（项目根目录 .env 或环境变量）")
+    tiingo = settings.universe_probe_dir / "tickers_2008_2019.csv"
+    if not tiingo.exists():
+        raise SystemExit(f"缺少 T08d-1 的 Tiingo 探查输出：{tiingo}（先运行 probe-tickers）")
+    rate = per_minute or settings.massive_per_minute or 5
+    return ProbeMassiveFollowupService(
+        source=MassiveReference(settings.massive_api_key.reveal(), per_minute=rate),
+        store=MassiveFollowupFiles(out_dir),
+        tiingo=read_reference_spans(tiingo),
         clock=time.monotonic,
         progress=progress,
     )

@@ -1,6 +1,7 @@
 """Massive 数据源试验命令（T08d-2a）：probe-massive。只解析参数与输出结果。
 
 uv run stock-risk probe-massive [--out data/massive_probe] [--per-minute 5]
+uv run stock-risk probe-massive --followup [--out data/massive_probe/followup] [--per-minute 5]
 """
 
 from __future__ import annotations
@@ -9,11 +10,16 @@ import argparse
 from pathlib import Path
 from typing import Any
 
-from stock_risk.bootstrap import build_probe_massive_service
+from stock_risk.bootstrap import (
+    build_probe_massive_followup_service,
+    build_probe_massive_service,
+)
 from stock_risk.config.settings import load_settings
 
 
 def _cmd_probe_massive(args: argparse.Namespace) -> int:
+    if args.followup:
+        return _cmd_followup(args)
     settings = load_settings()
     out = Path(args.out) if args.out else settings.massive_probe_dir
     service = build_probe_massive_service(settings, out, args.per_minute, progress=print)
@@ -41,6 +47,35 @@ def _cmd_probe_massive(args: argparse.Namespace) -> int:
     return 1 if r.rate_limited else 0
 
 
+def _cmd_followup(args: argparse.Namespace) -> int:
+    settings = load_settings()
+    out = Path(args.out) if args.out else settings.massive_probe_dir / "followup"
+    service = build_probe_massive_followup_service(settings, out, args.per_minute, progress=print)
+    try:
+        r = service.run()
+    except KeyboardInterrupt:
+        print("\n已中断：已完成的查询已保存进度；再次运行会跳过已完成项。")
+        return 130
+    s = r.summary
+    for label, part in (("A", "a_type_queries"), ("B", "b_market_queries")):
+        statuses = _count(v["status"] for v in s[part].values())
+        print(f"{label} 清单 {len(s[part])} 种：{statuses}")
+    print(f"C 案例 {len(s['case_status'])} 个：{_count(s['case_status'].values())}")
+    for d, v in s["coverage_vs_tiingo"].items():
+        print(f"D {d}：{v.get('counts', v['status'])}")
+    print(
+        f"本次请求 {r.requests_now} 次；累计请求 {s['requests_total']} 次，"
+        f"累计耗时 {s['elapsed_seconds_total']} 秒"
+    )
+    if r.rate_limited:
+        print("停止原因：连续 3 次 429，进度已保存，稍后再运行")
+    if r.remaining:
+        print(f"尚未完成 {len(r.remaining)} 项")
+    for p in r.paths:
+        print(f"  {p}")
+    return 1 if r.rate_limited else 0
+
+
 def _count(values: Any) -> dict[str, int]:
     out: dict[str, int] = {}
     for v in values:
@@ -54,4 +89,10 @@ def add_parsers(sub: Any) -> None:
     )
     p.add_argument("--out", default="", help="输出目录，默认 data/massive_probe/")
     p.add_argument("--per-minute", type=int, default=None, help="每分钟请求上限，默认 5（免费档）")
+    p.add_argument(
+        "--followup",
+        action="store_true",
+        help="第 2.4 节追加探查（去掉类型、交易所过滤；补充案例；与 Tiingo 对照），"
+        "默认输出 data/massive_probe/followup/",
+    )
     p.set_defaults(func=_cmd_probe_massive)

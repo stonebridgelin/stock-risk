@@ -7,7 +7,8 @@
 - 日志、异常信息中不出现 URL 与密钥；服务端错误原文中若出现密钥也替换为 ***；
 - 限频：默认每分钟 5 次（免费档），两次请求最小间隔 60 / 上限 秒；遇 429 退避（60 秒 × 次数），
   连续 3 次 429 抛 RateLimitError；
-- 封存：请求参数 date 不得晚于 2019-12-31（domain.massive_probe.check_query_date）。
+- 封存：请求参数 date 不得晚于 2019-12-31（domain.massive_probe.check_query_date）；
+- 查询的 exchange、type、market 为 None 时请求中不传该参数（第 2.4 节）。
 只用标准库 urllib；原始响应只在内存中解析后返回，不写盘。
 """
 
@@ -23,6 +24,7 @@ from datetime import date
 from typing import Any
 
 from stock_risk.application.ports import PriceSourceError, QueryRejected, RateLimitError
+from stock_risk.domain.massive_followup import TickerPages
 from stock_risk.domain.massive_probe import ListQuery, check_query_date
 
 HOST = "api.massive.com"
@@ -72,8 +74,17 @@ class MassiveReference:
         return self._requests
 
     def list_tickers(self, query: ListQuery) -> list[dict[str, Any]]:
+        got = self.list_tickers_pages(query, MAX_PAGES)
+        if not got.complete:
+            raise PriceSourceError(f"分页超过 {MAX_PAGES} 页，停止")
+        return got.rows
+
+    def list_tickers_pages(self, query: ListQuery, max_pages: int) -> TickerPages:
+        """翻页至多 max_pages 页；达到上限时仍有下一页则 complete 为假（第 2.4 节 B 的页数上限）。
+        exchange、type、market 为 None 时请求中不出现该参数。"""
         check_query_date(query.day)
         params = {
+            "market": query.market,
             "exchange": query.exchange,
             "type": query.type,
             "active": "true" if query.active else "false",
@@ -82,11 +93,13 @@ class MassiveReference:
             "order": "asc",
             "sort": "ticker",
         }
-        url: str | None = f"{BASE_URL}/v3/reference/tickers?{urllib.parse.urlencode(params)}"
+        qs = urllib.parse.urlencode({k: v for k, v in params.items() if v is not None})
+        url: str | None = f"{BASE_URL}/v3/reference/tickers?{qs}"
         out: list[dict[str, Any]] = []
-        for _ in range(MAX_PAGES):
-            if url is None:
-                return out
+        pages = 0
+        while url is not None:
+            if pages >= max_pages:
+                return TickerPages(out, pages, complete=False)
             data = self._get(url)
             if data is None:
                 raise QueryRejected(404, "not found")
@@ -94,8 +107,9 @@ class MassiveReference:
             if not isinstance(results, list):
                 raise PriceSourceError("All Tickers 返回格式异常（results 不是列表）")
             out.extend(r for r in results if isinstance(r, dict))
+            pages += 1
             url = self._next(data.get("next_url"))
-        raise PriceSourceError(f"分页超过 {MAX_PAGES} 页，停止")
+        return TickerPages(out, pages, complete=True)
 
     def overview(self, ticker: str, day: date) -> dict[str, Any] | None:
         check_query_date(day)

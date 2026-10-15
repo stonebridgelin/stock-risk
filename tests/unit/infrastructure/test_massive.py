@@ -161,3 +161,32 @@ def test_network_error_message_has_no_key() -> None:
     with pytest.raises(PriceSourceError) as e:
         c.list_tickers(Q)
     assert KEY not in str(e.value)
+
+
+# ---- 第 2.4 节：type、exchange 可选；页数上限 ----
+
+
+def _qs(req: urllib.request.Request) -> dict[str, str]:
+    return dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(req.full_url).query))
+
+
+def test_optional_type_and_exchange_not_sent() -> None:
+    t = Transport(*[{"status": "OK", "results": []}] * 2)
+    c = client(t)
+    c.list_tickers(ListQuery(date(2010, 1, 4), "XNAS", None, True))
+    c.list_tickers(ListQuery(date(2010, 1, 4), None, None, True, market="stocks"))
+    a, b = (_qs(r) for r in t.requests)
+    assert "type" not in a and a["exchange"] == "XNAS" and "market" not in a
+    assert "type" not in b and "exchange" not in b and b["market"] == "stocks"
+    assert b["active"] == "true" and b["date"] == "2010-01-04"
+
+
+def test_page_cap_reports_pages_and_incomplete() -> None:
+    nxt = "https://api.massive.com/v3/reference/tickers?cursor=x"
+    page = {"status": "OK", "results": [{"ticker": "A"}], "next_url": nxt}
+    t = Transport(page, page, page)
+    got = client(t).list_tickers_pages(Q, 2)
+    assert got.pages == 2 and not got.complete and len(got.rows) == 2 and len(t.requests) == 2
+    t2 = Transport({"status": "OK", "results": [{"ticker": "A"}]})
+    done = client(t2).list_tickers_pages(Q, 1)
+    assert done.pages == 1 and done.complete

@@ -158,19 +158,10 @@ class ProbeMassiveService:
             except PriceSourceError as e:
                 state["cases"][c.key] = _status("error", message=str(e))
             else:
-                state["cases"][c.key] = self._case_result(raw)
+                state["cases"][c.key] = case_result(raw)
             self._progress(f"    {state['cases'][c.key]['status']}")
             self._store.save_progress(state)
         return False
-
-    @staticmethod
-    def _case_result(raw: Mapping[str, Any] | None) -> dict[str, Any]:
-        if raw is None:
-            return _status("not_found")
-        sealed: SealedTicker | None = seal_ticker(raw)
-        if sealed is None:
-            return _status("dropped_by_seal")  # list_date 晚于 2019-12-31，按封存丢弃
-        return _status("found", row=sealed.as_row())
 
     # ---- 输出 ----
 
@@ -185,24 +176,7 @@ class ProbeMassiveService:
         return out
 
     def _case_rows(self, state: Mapping[str, Any]) -> list[dict[str, Any]]:
-        rows = []
-        for c in self._cases:
-            st = state["cases"].get(c.key)
-            base = {"category": c.category, "ticker": c.ticker, "query_date": c.day.isoformat()}
-            if st is None:
-                rows.append({**base, "status": "not_run"})
-                continue
-            rows.append(
-                {
-                    **base,
-                    "status": st["status"],
-                    "http_status": st.get("http_status"),
-                    "message": st.get("message"),
-                    **(st.get("row") or {}),
-                    "ticker": c.ticker,
-                }
-            )
-        return rows
+        return case_rows(self._cases, state["cases"])
 
     def _summary(self, state: Mapping[str, Any]) -> dict[str, Any]:
         combos = {}
@@ -214,7 +188,7 @@ class ProbeMassiveService:
                 combos[q.key] = {k: v for k, v in st.items() if k != "rows"}
         by_date: dict[date, list[SealedTicker]] = {}
         for d, rows in self._lists(state).items():
-            by_date[d] = [_from_row(r) for r in rows]
+            by_date[d] = [sealed_from_row(r) for r in rows]
         return {
             "list_queries": combos,
             "case_status": {
@@ -229,7 +203,41 @@ class ProbeMassiveService:
         }
 
 
-def _from_row(r: Mapping[str, Any]) -> SealedTicker:
+def case_result(raw: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Ticker Overview 的一个结果 → 进度中的状态（封存处理后）。"""
+    if raw is None:
+        return _status("not_found")
+    sealed: SealedTicker | None = seal_ticker(raw)
+    if sealed is None:
+        return _status("dropped_by_seal")  # list_date 晚于 2019-12-31，按封存丢弃
+    return _status("found", row=sealed.as_row())
+
+
+def case_rows(cases: Sequence[Case], done: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """cases.csv 的行：每个案例一行，未运行的记 not_run。"""
+    rows = []
+    for c in cases:
+        st = done.get(c.key)
+        base = {"category": c.category, "ticker": c.ticker, "query_date": c.day.isoformat()}
+        if st is None:
+            rows.append({**base, "status": "not_run"})
+            continue
+        rows.append(
+            {
+                **base,
+                "status": st["status"],
+                "http_status": st.get("http_status"),
+                "message": st.get("message"),
+                **(st.get("row") or {}),
+                "ticker": c.ticker,
+            }
+        )
+    return rows
+
+
+def sealed_from_row(r: Mapping[str, Any]) -> SealedTicker:
+    """进度中保存的行（SealedTicker.as_row）还原为 SealedTicker。"""
+
     def day(v: Any) -> date | None:
         return date.fromisoformat(v) if v else None
 

@@ -40,7 +40,7 @@ def _cell(v: Any) -> Any:
     return v
 
 
-def _write_csv(path: Path, columns: Sequence[str], rows: Sequence[Mapping[str, Any]]) -> None:
+def write_csv(path: Path, columns: Sequence[str], rows: Sequence[Mapping[str, Any]]) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
     with tmp.open("w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=list(columns), extrasaction="ignore")
@@ -74,10 +74,10 @@ class MassiveProbeFiles:
         paths: list[Path] = []
         for d, rows in sorted(lists.items()):
             p = self._dir / f"lists_{d.isoformat()}.csv"
-            _write_csv(p, LIST_COLUMNS, rows)
+            write_csv(p, LIST_COLUMNS, rows)
             paths.append(p)
         p = self._dir / "cases.csv"
-        _write_csv(p, CASE_COLUMNS, cases)
+        write_csv(p, CASE_COLUMNS, cases)
         paths.append(p)
         p = self._dir / "summary.json"
         p.write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", "utf-8")

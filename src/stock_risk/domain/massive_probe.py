@@ -20,6 +20,7 @@ QUERY_DATES = (date(2010, 1, 4), date(2012, 6, 1), date(2015, 6, 1), date(2019, 
 EXCHANGES = ("XNYS", "XNAS")
 TYPES = ("CS", "ADRC")
 ACTIVE_FLAGS = (True, False)
+ANY = "any"  # 查询键中表示"不传该参数"
 
 # 原样保留的字段；日期字段（list_date、delisted_utc）另行封存处理
 ADMITTED_FIELDS = (
@@ -47,12 +48,16 @@ def check_query_date(d: date) -> None:
 
 @dataclass(frozen=True, slots=True)
 class ListQuery:
-    """All Tickers 的一种查询组合。"""
+    """All Tickers 的一种查询组合。
+
+    exchange、type、market 为 None 时请求中不传该参数（第 2.4 节）。
+    """
 
     day: date
-    exchange: str
-    type: str
+    exchange: str | None
+    type: str | None
     active: bool
+    market: str | None = None
 
     def __post_init__(self) -> None:
         check_query_date(self.day)
@@ -60,7 +65,8 @@ class ListQuery:
     @property
     def key(self) -> str:
         flag = "active" if self.active else "inactive"
-        return f"{self.day.isoformat()}_{self.exchange}_{self.type}_{flag}"
+        key = f"{self.day.isoformat()}_{self.exchange or ANY}_{self.type or ANY}_{flag}"
+        return f"{key}_{self.market}" if self.market else key
 
 
 def list_queries() -> tuple[ListQuery, ...]:
