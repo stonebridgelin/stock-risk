@@ -44,7 +44,12 @@ def _header(r: AuditReport) -> list[str]:
         f"- 交易日历代理：{r.calendar_symbol}（{r.calendar_first} ~ {r.calendar_last}）",
         f"- 复权系数跳变阈值：{r.adj_factor_threshold:.0%}（任务卡 T00 给定）",
         f"- 审计代码 {len(r.symbols)} 个；研究样本中缺少原始文件 {len(r.missing)} 个"
-        + (f"：{', '.join(r.missing)}" if r.missing else ""),
+        + (f"：{', '.join(r.missing)}" if r.missing else "")
+        + (
+            f"；下载状态已确认无数据 {len(r.no_data)} 个：{', '.join(r.no_data)}"
+            if r.no_data
+            else ""
+        ),
         f"- 明确失败合计 {r.total_failures} 项；封存越界行合计 {r.total_sealed_rows} 行（应为 0）",
         f"- MANIFEST 校验：清单 {r.manifest_entries} 条，不一致 {len(r.manifest_mismatches)} 项",
         f"- 已登记的复权价更正 {sum(len(s.corrections) for s in r.symbols)} 条（I11）",

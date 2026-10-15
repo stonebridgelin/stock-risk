@@ -19,6 +19,7 @@ from stock_risk.application.replay_run import ReplayRunService
 from stock_risk.application.show_ranges import ShowRangesService
 from stock_risk.config.settings import Settings
 from stock_risk.domain.universe import UniverseMember
+from stock_risk.domain.universe_probe import CoverageRequest
 from stock_risk.infrastructure.calendars.xnys import ExchangeCalendarsXnys
 from stock_risk.infrastructure.replay.compare_files import CompareFileSink
 from stock_risk.infrastructure.replay.environment import LocalRunEnvironment
@@ -30,14 +31,20 @@ from stock_risk.infrastructure.storage.csv_config_providers import (
     CsvSegmentProvider,
 )
 from stock_risk.infrastructure.storage.csv_raw_reader import CsvRawDataReader
-from stock_risk.infrastructure.storage.csv_raw_repository import CsvRawDataRepository
+from stock_risk.infrastructure.storage.csv_raw_repository import (
+    CsvRawDataRepository,
+    confirmed_no_data,
+)
 from stock_risk.infrastructure.storage.csv_universe_provider import CsvUniverseProvider
-from stock_risk.infrastructure.storage.fetch_batch_files import JsonQuotaStore
+from stock_risk.infrastructure.storage.fetch_batch_files import JsonQuotaStore, read_batch_list
 from stock_risk.infrastructure.storage.ranges_calendar_writers import (
     CalendarCheckFileWriter,
     RangesFileWriter,
 )
-from stock_risk.infrastructure.storage.universe_probe_files import ProbeFileWriter
+from stock_risk.infrastructure.storage.universe_probe_files import (
+    ProbeFileWriter,
+    read_coverage_requests,
+)
 from stock_risk.infrastructure.tiingo.client import TiingoPriceSource
 from stock_risk.infrastructure.tiingo.ticker_list import TiingoTickerList
 
@@ -68,6 +75,16 @@ def build_audit_raw_data_service(settings: Settings) -> AuditRawDataService:
 def build_probe_tickers_service() -> ProbeTickersService:
     """代码清单探查（T08d-1）：公开清单，不用密钥，不下载价格。"""
     return ProbeTickersService(source=TiingoTickerList(), writer=ProbeFileWriter())
+
+
+def load_batch_list(path: Path) -> list[BatchItem]:
+    """读取下载清单 CSV（symbol,source_ticker,from,to）。入口层经此读取，不直接依赖存储实现。"""
+    return read_batch_list(path)
+
+
+def load_coverage_requests(path: Path) -> list[CoverageRequest]:
+    """读取覆盖对照 CSV（一列 ticker，可附 from,to）。"""
+    return read_coverage_requests(path)
 
 
 def quota_limits(
@@ -121,7 +138,8 @@ def build_audit_dir_service(
     settings: Settings, raw_dir: Path, items: Sequence[BatchItem]
 ) -> AuditRawDataService:
     """审计其他目录（如 data/raw_selection）：代码取自下载清单；日历代理仍用 data/raw 的 SPY；
-    上市期间沿用配置，不应用探索集的更正与分段。"""
+    上市期间沿用配置，不应用探索集的更正与分段。_fetch_status.json 中已确认无数据的代码
+    不算缺失（B-04）。"""
     loader = MarketDataLoader(
         reader=CsvRawDataReader(raw_dir),
         listings=CsvListingPeriodProvider(settings.listing_periods_file),
@@ -133,6 +151,7 @@ def build_audit_dir_service(
         segments=_NoConfig(),
         writer=AuditReportFileWriter(),
         calendar_reader=CsvRawDataReader(settings.raw_data_dir),
+        confirmed_no_data=confirmed_no_data(raw_dir),
     )
 
 

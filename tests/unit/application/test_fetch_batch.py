@@ -163,6 +163,60 @@ def test_interrupt_keeps_progress(tmp_path: Path) -> None:
     assert src2.calls == ["B", "C"] and r.cumulative_done == 3
 
 
+class InterruptBeforeRequest(FakeSource):
+    """在限频等待中被中断：请求尚未发出（request_count 不变）。"""
+
+    def fetch(self, ticker: str, start: date, end: date):  # type: ignore[no-untyped-def]
+        if ticker == "B":
+            self.calls.append(ticker)
+            raise KeyboardInterrupt
+        return super().fetch(ticker, start, end)
+
+
+def test_b04_month_ticker_only_counted_when_request_sent(tmp_path: Path) -> None:
+    """Gemini 第二阶段 B-04：未发出请求就中断，不消耗当月新代码额度。"""
+    clock = Clock(datetime(2026, 10, 14, tzinfo=UTC))
+    with pytest.raises(KeyboardInterrupt):
+        service(tmp_path, InterruptBeforeRequest({}), clock).run(items("A", "B"), QuotaLimits())
+    q = quota(tmp_path)
+    assert q["month_tickers"] == ["A"] and q["day_requests"] == 1
+
+
+def test_b04_audit_dir_separates_no_data_from_missing(tmp_path: Path) -> None:
+    from stock_risk.application.audit_raw_data import AuditRawDataService
+    from stock_risk.application.market_data_loader import MarketDataLoader
+    from stock_risk.infrastructure.storage.audit_report_writer import AuditReportFileWriter
+    from stock_risk.infrastructure.storage.csv_raw_reader import CsvRawDataReader
+    from stock_risk.infrastructure.storage.csv_raw_repository import confirmed_no_data
+
+    clock = Clock(datetime(2026, 10, 14, tzinfo=UTC))
+    out = tmp_path / "sel"
+    service(out, FakeSource({"BBB": None}), clock).run(items("AAA", "BBB"), QuotaLimits())
+    cal = tmp_path / "raw"
+    service(cal, FakeSource({}), clock).run([BatchItem("SPY", "SPY", FROM, TO)], QuotaLimits())
+    assert confirmed_no_data(out) == {"BBB"}
+
+    class Members:
+        def load(self):  # type: ignore[no-untyped-def]
+            return [i.member() for i in items("AAA", "BBB", "CCC")]
+
+    class NoConfig:
+        def load(self) -> dict:
+            return {}
+
+    svc = AuditRawDataService(
+        MarketDataLoader(CsvRawDataReader(out), NoConfig(), NoConfig()),
+        Members(),
+        NoConfig(),
+        AuditReportFileWriter(),
+        calendar_reader=CsvRawDataReader(cal),
+        confirmed_no_data=confirmed_no_data(out),
+    )
+    report, _ = svc.run(date(2026, 10, 14), tmp_path / "audit")
+    assert report.no_data == ["BBB"] and report.missing == ["CCC"]
+    assert report.blocking_problems == ["缺少原始文件 1 个：CCC"]
+
+
 def test_seal_on_returned_rows(tmp_path: Path) -> None:
     """数据源多返回的 2020 年行在写盘前被截断（第二道关）。"""
     clock = Clock(datetime(2026, 10, 14, tzinfo=UTC))

@@ -74,6 +74,32 @@ def test_assumptions_reject(over: dict) -> None:
         ExplorationAssumptions(**over)  # type: ignore[arg-type]
 
 
+@pytest.mark.parametrize(
+    "over",
+    [
+        {"h": True},  # Gemini 第二阶段 B-03：bool 不是数值
+        {"h": math.nan},
+        {"w_long": True},
+        {"w_long": 252.5},
+        {"w_long": 252.0},
+        {"w_long": 0},
+    ],
+)
+def test_b03_assumptions_reject_bool_and_non_integer(over: dict) -> None:
+    with pytest.raises(InvalidParameter):
+        ExplorationAssumptions(**over)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("over", [{"x1": False}, {"x1": True}, {"x2": False}, {"x1": math.nan}])
+def test_b03_switches_reject_bool_and_non_finite(over: dict) -> None:
+    with pytest.raises(InvalidParameter):
+        V08Switches(**over)  # type: ignore[arg-type]
+
+
+def test_b03_switches_accept_int_zero() -> None:
+    assert V08Switches(x1=0, x2=0) == V08Switches()
+
+
 def test_assumptions_boundaries_accepted() -> None:
     ExplorationAssumptions(phi=1, k_stab=5, gap_break=1)
 

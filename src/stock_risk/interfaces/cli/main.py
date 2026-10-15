@@ -30,9 +30,9 @@ from stock_risk.bootstrap import (
     build_replay_run_service,
     build_show_ranges_service,
     build_v0_regression,
+    load_batch_list,
 )
 from stock_risk.config.settings import load_settings
-from stock_risk.infrastructure.storage.fetch_batch_files import read_batch_list
 from stock_risk.interfaces.cli import selection
 
 DEFAULT_START = DOWNLOAD_START
@@ -54,7 +54,7 @@ def _cmd_audit_raw(args: argparse.Namespace) -> int:
             print("--dir 需要同时给出 --list（下载清单，作为被审计的代码）")
             return 2
         raw_dir = Path(args.dir)
-        service = build_audit_dir_service(settings, raw_dir, read_batch_list(Path(args.list)))
+        service = build_audit_dir_service(settings, raw_dir, load_batch_list(Path(args.list)))
         out_root = settings.audit_output_dir / raw_dir.name  # 不与 data/raw 的审计输出混放
     else:
         service = build_audit_raw_data_service(settings)

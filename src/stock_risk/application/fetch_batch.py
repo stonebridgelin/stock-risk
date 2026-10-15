@@ -201,7 +201,6 @@ class FetchBatchService:
         """一个代码一次请求取全区间。返回 None 表示限频用尽（未记录该代码的状态）。"""
         member = item.member()
         self._progress(f"[请求] {item.symbol} ← {self._source.name}:{item.source_ticker}")
-        state.add_ticker(item.source_ticker)
         before = self._source.request_count
         try:
             raw = self._source.fetch(item.source_ticker, item.start, item.end)
@@ -211,7 +210,10 @@ class FetchBatchService:
         except PriceSourceError as e:
             return record_failure(self._repo, member, str(e), self._progress)
         finally:
-            state.day_requests += self._source.request_count - before
+            sent = self._source.request_count - before
+            state.day_requests += sent
+            if sent > 0:  # Gemini 第二阶段 B-04：只有确实发出请求时才计入当月新代码
+                state.add_ticker(item.source_ticker)
             self._quota.save(state.to_dict())
         history = truncate_to_exploration(raw) if raw else None
         if history is None or not history.bars:

@@ -74,9 +74,13 @@ def _cycle_and_level(
 
 def _box_high(prev: DailyRecord | None, rec: DailyRecord, params: EngineParams) -> list[str]:
     """2. box_high 只在 since_obs = K 当天写入，此后到观察重置不变；since_obs ≥ K 时必须有值
-    （仅 BOX）。"""
+    （仅 BOX）。confirm ≠ BOX 时 box_high 必须为空（Gemini 第二阶段 B-03）。"""
     k = params.candidate.k
-    if params.candidate.confirm is not Confirm.BOX or rec.episode_id is None:
+    if params.candidate.confirm is not Confirm.BOX:
+        if rec.box_high is not None:
+            return [f"{rec.day} 不变量2：confirm = {params.candidate.confirm} 时 box_high 有值"]
+        return []
+    if rec.episode_id is None:
         return []
     out: list[str] = []
     if rec.box_high is not None and (rec.since_obs is None or rec.since_obs < k):

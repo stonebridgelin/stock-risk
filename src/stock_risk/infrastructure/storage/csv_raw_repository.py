@@ -40,6 +40,17 @@ ACTION_COLUMNS = ["date", "type", "value"]
 STATUS_FILE = "_fetch_status.json"
 
 
+def confirmed_no_data(root: Path) -> frozenset[str]:
+    """`_fetch_status.json` 中已确认无数据（state = no_data）的代码。只读，不建目录。"""
+    p = root / STATUS_FILE
+    if not p.exists():
+        return frozenset()
+    status: dict[str, dict[str, Any]] = json.loads(p.read_text("utf-8"))
+    return frozenset(
+        s for s, r in status.items() if not r.get("ok") and r.get("state") == "no_data"
+    )
+
+
 def _write_csv(path: Path, header: list[str], rows: list[list[Any]]) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
     with tmp.open("w", newline="", encoding="utf-8") as f:

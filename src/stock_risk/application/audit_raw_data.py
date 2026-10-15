@@ -75,10 +75,15 @@ class AuditRawDataService:
         segments: SegmentProvider,
         writer: AuditReportWriter,
         calendar_reader: RawDataReader | None = None,
+        confirmed_no_data: frozenset[str] = frozenset(),
     ) -> None:
         """calendar_reader：日历代理 SPY 所在目录的读取器；审计其他目录（如 data/raw_selection，
-        T08d-1）时由组装入口给出 data/raw 的读取器，默认与被审计目录相同。"""
+        T08d-1）时由组装入口给出 data/raw 的读取器，默认与被审计目录相同。
+
+        confirmed_no_data：下载状态中已确认无数据的代码（B-04）；没有文件时记为“无数据”，
+        不算缺少原始文件。"""
         self._calendar_reader = calendar_reader
+        self._no_data = confirmed_no_data
         self._loader = loader
         self._universe = universe
         self._segments = segments
@@ -110,7 +115,10 @@ class AuditRawDataService:
         )
         for member in members:
             if not self._loader.exists(member.symbol):
-                report.missing.append(member.symbol)
+                if member.symbol in self._no_data:
+                    report.no_data.append(member.symbol)
+                else:
+                    report.missing.append(member.symbol)
                 continue
             report.symbols.append(
                 audit_symbol(

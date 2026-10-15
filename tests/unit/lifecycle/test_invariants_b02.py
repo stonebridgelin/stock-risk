@@ -71,6 +71,21 @@ def test_invariant2_box_high_required_after_k() -> None:
     assert any("不变量2：since_obs ≥ K 时 box_high 为空" in x for x in bad)
 
 
+@pytest.mark.parametrize("confirm", [Confirm.SMA, Confirm.BOX_ROLL])
+def test_b03_invariant2_box_high_empty_unless_box(confirm: Confirm) -> None:
+    """Gemini 第二阶段 B-03：confirm ≠ BOX 时 box_high 必须为空。"""
+    rows = [("b0", 80, 83), ("b1", 81, 83), ("b2", 82, 83), ("b3", 83, 83), ("b4", 84, 83)]
+    run = s_run(rows, params(confirm))
+    assert run.invariants() == []
+    bad = []
+    for r in run.result.results:
+        if r.record.day == run.labels["b4"]:
+            r = replace(r, record=replace(r.record, box_high=84.0))
+        bad.append(r)
+    out = check_invariants(bad, run.params)
+    assert any(f"不变量2：confirm = {confirm} 时 box_high 有值" in x for x in out)
+
+
 def test_invariant6_revoke_required_when_confirmation_disappears() -> None:
     """S7：x3 确认，x4 收盘跌破 SMA10 并撤销；去掉撤销事件后应报告违反。"""
     rows = [("x0", 80, None), ("x1", 81, 83), ("x2", 82, 82.5), ("x3", 83, 82)]

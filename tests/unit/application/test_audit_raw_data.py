@@ -95,10 +95,12 @@ def test_audit_end_to_end(tmp_path: Path) -> None:
         "VRX.csv": "not_in_manifest",
         "SHLD.csv": "not_in_manifest",
     }
-    # D-02：明确失败、哈希不符、缺少原始文件使 audit-raw 返回非零；不在清单中的文件不算
+    # D-02：明确失败、哈希不符、缺少原始文件使 audit-raw 返回非零
+    # B-02（Gemini 第二阶段）：被审计证券的 CSV 不在清单中同样阻断
     assert report.blocking_problems == [
         "明确失败 1 项",
         "MANIFEST 哈希不符 1 个：SPY.csv",
+        "被审计证券不在 MANIFEST 中 2 个：SHLD.csv, VRX.csv",
         "缺少原始文件 1 个：GONE",
     ]
 
@@ -137,9 +139,52 @@ def test_history_type_is_price_history(tmp_path: Path) -> None:
     assert isinstance(CsvRawDataReader(raw).load("X").history.bars[0], DailyBar)
 
 
+def _report(manifest_sha256, entries, mismatches=(), symbols=("X",)):
+    from stock_risk.application.audit_models import AuditReport, SymbolAudit
+
+    audits = [
+        SymbolAudit(s, 1, None, None, 0, None, None, None, 0, (), (), (), (), ()) for s in symbols
+    ]
+    return AuditReport(
+        date(2026, 10, 13),
+        manifest_sha256,
+        "SPY",
+        None,
+        None,
+        0.1,
+        symbols=audits,
+        manifest_entries=entries,
+        manifest_mismatches=list(mismatches),
+    )
+
+
 def test_blocking_problems_empty_when_clean() -> None:
-    from datetime import date
+    assert _report("abc", 1).blocking_problems == []
 
-    from stock_risk.application.audit_models import AuditReport
 
-    assert AuditReport(date(2026, 10, 13), None, "SPY", None, None, 0.1).blocking_problems == []
+def test_b02_manifest_missing_or_empty_blocks() -> None:
+    assert _report(None, 0).blocking_problems == ["MANIFEST.sha256 缺失"]
+    assert _report("e3b0", 0).blocking_problems == ["MANIFEST.sha256 为空"]
+
+
+def test_b02_audited_csv_not_in_manifest_blocks_others_only_reported() -> None:
+    from stock_risk.domain.audit import ManifestMismatch, ManifestStatus
+
+    nim = ManifestStatus.NOT_IN_MANIFEST
+    mismatches = [ManifestMismatch(f, nim, None, "h") for f in ("X.csv", "Y.csv")]
+    assert _report("abc", 1, mismatches).blocking_problems == [
+        "被审计证券不在 MANIFEST 中 1 个：X.csv"
+    ]
+
+
+def test_b02_missing_manifest_file_end_to_end(tmp_path: Path) -> None:
+    raw = tmp_path / "raw"
+    write_raw(raw, "SPY", [row(d) for d in CAL])
+    members = [UniverseMember("SPY", ("SPY",), "x", Role.SIGNAL_TARGET)]
+    loader = MarketDataLoader(CsvRawDataReader(raw), Fixed({}), Fixed({}))
+    svc = AuditRawDataService(loader, Fixed(members), Fixed({}), AuditReportFileWriter())
+    report, _ = svc.run(date(2026, 10, 13), tmp_path / "audit")
+    assert report.blocking_problems == [
+        "MANIFEST.sha256 缺失",
+        "被审计证券不在 MANIFEST 中 1 个：SPY.csv",
+    ]

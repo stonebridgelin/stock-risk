@@ -54,6 +54,14 @@ layers = [
 ]
 
 [[tool.importlinter.contracts]]
+name = "interfaces 只经 bootstrap 组装：不直接导入 infrastructure 与 domain（Gemini 第二阶段 B-01）"
+type = "forbidden"
+source_modules = ["stock_risk.interfaces"]
+forbidden_modules = ["stock_risk.infrastructure", "stock_risk.domain"]
+# 经 bootstrap、application 的间接依赖是分层所允许的，只禁止直接导入
+allow_indirect_imports = true
+
+[[tool.importlinter.contracts]]
 name = "domain 保持纯净：不依赖 config 与任何 I/O 层"
 type = "forbidden"
 source_modules = ["stock_risk.domain"]

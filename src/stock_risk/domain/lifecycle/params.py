@@ -100,10 +100,11 @@ class ExplorationAssumptions:
     w_long: int = 252  # 长窗口 W_L（v0.8 第 1A.1 节固定探索假设）
 
     def __post_init__(self) -> None:
-        if not (math.isfinite(self.h) and 0 < self.h <= 1):
+        # Gemini 第二阶段 B-03：h、w_long 复用 _finite、_positive_int，拒绝 bool 与非整数
+        h = _finite("h", self.h)
+        if not 0 < h <= 1:
             raise IllegalCombination(f"违反约束 5：0 < h ≤ 1，实际 h = {self.h}")
-        if self.w_long < 1:
-            raise IllegalCombination(f"W_L 必须为正整数，实际 {self.w_long}")
+        _positive_int("w_long", self.w_long)
         phi = _finite("phi", self.phi)
         if not 0 < phi <= 1:
             raise InvalidParameter(f"必须 0 < φ ≤ 1，实际 φ = {phi}")
@@ -149,8 +150,8 @@ class V08Switches:
 
     def __post_init__(self) -> None:
         for name in ("x1", "x2"):
-            v = getattr(self, name)
-            if not (math.isfinite(v) and 0 <= v < 1):
+            v = _finite(name, getattr(self, name))  # B-03：拒绝 bool
+            if not 0 <= v < 1:
                 raise IllegalCombination(f"{name} 必须是 [0, 1) 内的比例，实际 {v}")
         if self.x2 > 0 and not self.t11_full:
             raise IllegalCombination("违反约束 1：x₂ > 0 时 t11_full 必须为 ON")

@@ -14,11 +14,11 @@ from typing import Any
 from stock_risk.bootstrap import (
     build_fetch_batch_service,
     build_probe_tickers_service,
+    load_batch_list,
+    load_coverage_requests,
     quota_limits,
 )
 from stock_risk.config.settings import load_settings
-from stock_risk.infrastructure.storage.fetch_batch_files import read_batch_list
-from stock_risk.infrastructure.storage.universe_probe_files import read_coverage_requests
 
 STOP_TEXT = {
     "max_symbols": "已达本次处理上限（--max-symbols）",
@@ -30,7 +30,7 @@ STOP_TEXT = {
 
 def _cmd_probe_tickers(args: argparse.Namespace) -> int:
     settings = load_settings()
-    check = read_coverage_requests(Path(args.check)) if args.check else None
+    check = load_coverage_requests(Path(args.check)) if args.check else None
     out = Path(args.out) if args.out else settings.universe_probe_dir
     result = build_probe_tickers_service().run(out, check)
     s = result.summary
@@ -50,7 +50,7 @@ def _cmd_probe_tickers(args: argparse.Namespace) -> int:
 def _cmd_fetch_batch(args: argparse.Namespace) -> int:
     settings = load_settings()
     try:
-        items = read_batch_list(Path(args.list))
+        items = load_batch_list(Path(args.list))
     except ValueError as e:
         print(f"拒绝执行：{e}")
         return 2
