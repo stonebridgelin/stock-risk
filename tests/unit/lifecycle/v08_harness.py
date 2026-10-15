@@ -144,6 +144,24 @@ def run_table(
     return Run(lab, run_with_source(SYMBOL, run_days, src, p, state=state), p)
 
 
+def prior_fields(prior: Prior) -> dict[str, Any]:
+    """B-01：注入前态对应的期望字段（run_table 把前态的启动日与 obs_start 记为日历首日）。"""
+    return {
+        "episode_id": START_DAY,
+        "level": "A" if prior.level is Level.ALERT else "W",
+        "cycle_no": prior.cycle_no,
+        "obs_start": START_DAY,
+        "box_high": None,
+        "h_d": prior.h_d,
+        "downgraded": prior.downgraded,
+        "obs_issued": prior.obs_n > 0,
+        "prev_confirm": prior.prev_confirm,
+        "dc": 0,
+        "rc": 0,
+        "xc": 0,
+    }
+
+
 def decimal_bars(after_peak: list[Decimal]) -> list[DailyBar]:
     """13 号第 2 节的完整日线，价格按十进制精确构造后再转为 float。"""
     closes = [Decimal(100)] * 90 + after_peak
@@ -177,6 +195,7 @@ __all__ = [
     "RecScale",
     "Table",
     "params",
+    "prior_fields",
     "run_table",
     "decimal_bars",
     "f_run_decimal",

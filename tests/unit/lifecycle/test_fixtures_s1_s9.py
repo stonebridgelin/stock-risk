@@ -11,6 +11,7 @@ from stock_risk.domain.indicator_source import TableIndicators, TableRow
 from stock_risk.domain.lifecycle.model import DataStatus, Display, EndReason, EventType, Level
 from stock_risk.domain.lifecycle.params import ReleasePath
 from stock_risk.domain.lifecycle.runner import run_with_source
+from tests.unit.lifecycle.fields import NOEP, check_days, released, reset_at, started
 from tests.unit.lifecycle.harness import START_DAY, SYMBOL, Run, params, s_run, weekdays
 
 E = EventType
@@ -26,6 +27,25 @@ S1_ROWS = [
     ("s8", 87, 82),
     ("s9", 88, 82.5),
 ]
+
+
+# B-01 逐日全字段（推导）：S1 的 p、s0–s9。s1 新低进入周期 2；s4 确认成立；s6 T15 降级，H_d = 85，
+# 此后关注且已降级，H_d 取当日收盘与 H_d 的较大值；s9 解除。
+S1_DAYS = {
+    "s0": started("s0", "A"),
+    "s1": reset_at("s1", 2),
+    "s4": {
+        "prev_confirm": True,
+        "obs_issued": True,
+        "dc": 1,
+        "events": [("STAB", 2), ("OBS", 2, 1)],
+    },
+    "s5": {"dc": 2},
+    "s6": {"level": "W", "downgraded": True, "h_d": 85.0, "dc": 0, "rc": 0, "events": [("DOWN",)]},
+    "s7": {"h_d": 86.0, "rc": 1},
+    "s8": {"h_d": 87.0, "rc": 2},
+    "s9": released("s9"),
+}
 
 
 def assert_day(run: Run, label: str, **expected) -> None:
@@ -79,6 +99,7 @@ def test_S1_downgrade_then_release_while_d_ep_ge_k2() -> None:
     assert_day(run, "s9", display=Display.NORMAL, last_release=run.labels["s9"])
     for label in ("s1", "s2", "s3", "s5", "s7", "s8"):
         assert run.events(label) == [], label
+    check_days(run, S1_DAYS)
     assert run.invariants() == []
 
 
@@ -136,6 +157,32 @@ def test_S2_no_reescalation_without_new_deterioration_and_rebuilt_observation() 
     assert run.types("t12") == [E.STABILIZED] and run.event("t12", E.STABILIZED).identity[1] == 2
     for label in ("t1", "t2", "t4", "t6", "t8", "t10", "t11"):
         assert run.events(label) == [], label
+    # B-01 推导：t3 确认 → t5 降级（H_d = 85，t6–t8 收盘均不高于 85）；t7 撤销；
+    # t9 回吐 2 触发 T11，观察重置进入周期 2，H_d 清空，downgraded 保持为是；t12 企稳（周期 2）
+    check_days(
+        run,
+        {
+            "t0": started("t0", "A"),
+            "t3": {
+                "prev_confirm": True,
+                "obs_issued": True,
+                "dc": 1,
+                "events": [("STAB", 1), ("OBS", 1, 1)],
+            },
+            "t4": {"dc": 2},
+            "t5": {
+                "level": "W",
+                "downgraded": True,
+                "h_d": 85.0,
+                "dc": 0,
+                "rc": 0,
+                "events": [("DOWN",)],
+            },
+            "t7": {"prev_confirm": False, "events": [("REV", 1, 1)]},
+            "t9": {**reset_at("t9", 2), "level": "A", "h_d": None, "events": [("ESC",)]},
+            "t12": {"events": [("STAB", 2)]},
+        },
+    )
     assert run.invariants() == []
 
 
@@ -148,6 +195,8 @@ def test_S3_restricted_window_after_release() -> None:
     assert_day(run, "s13", d_t=2.0, display=Display.WATCH, p_ep=88.0, p_ep_day=run.labels["s9"])
     start = run.event("s13", E.START)
     assert start.basis["reasons"] == ["R1_GE_K1"] and start.transition == "T7"
+    # B-01 推导：s0–s9 同 S1；s10–s12 无预警，last_release 保持 s9；s13 以关注启动
+    check_days(run, {**S1_DAYS, "s10": dict(NOEP), "s13": started("s13", "W")})
     assert run.invariants() == []
 
 
@@ -183,6 +232,25 @@ def test_S4_reason_switch_a_to_b_keeps_count() -> None:
     down = run.event("u3", E.DOWNGRADE)
     assert down.basis["reasons"] == ["b"]
     assert down.basis["segment"] == [["a"], ["a"], ["b"]]
+    # B-01 推导：u1、u2 证据 a；u3 企稳且确认，候选 dc = 3 降级，H_d = 92
+    check_days(
+        run,
+        {
+            "u0": started("u0", "A"),
+            "u1": {"dc": 1},
+            "u2": {"dc": 2},
+            "u3": {
+                "level": "W",
+                "downgraded": True,
+                "h_d": 92.0,
+                "dc": 0,
+                "rc": 0,
+                "prev_confirm": True,
+                "obs_issued": True,
+                "events": [("STAB", 1), ("OBS", 1, 1), ("DOWN",)],
+            },
+        },
+    )
     assert run.invariants() == []
 
 
@@ -244,6 +312,19 @@ def test_S5_missing_days_cross_break_threshold() -> None:
     assert_day(run, "v7", display=Display.INSUFFICIENT, transition="T5", seg_start=lab["v6"])
     assert run.events("v6") == [] and run.events("v7") == []
     assert run.rec("v4").last_release is None
+    # B-01 推导：v1–v3 缺价各做一次观察重置（周期 2、3、4）；v4 断点，记录被结束的预警，
+    # 其余预警字段为空，last_release 清空；此后无预警
+    check_days(
+        run,
+        {
+            "vs": started("vs", "A"),
+            "v1": {**reset_at("v1", 2), "events": [("ISSUE",)]},
+            "v2": {**reset_at("v2", 3), "events": [("ISSUE",)]},
+            "v3": {**reset_at("v3", 4), "events": [("ISSUE",)]},
+            "v4": {**NOEP, "episode_id": "vs", "events": [("BREAK",), ("ISSUE",)]},
+            "v5": dict(NOEP),
+        },
+    )
     assert run.invariants() == []
 
 
@@ -294,6 +375,36 @@ def test_S6_strong_recovery_direct_vs_two_stage(release: ReleasePath) -> None:
         assert run.rec("w8").rc_cand == 3
         assert run.event("w8", E.RELEASE).basis["reasons"] == ["b′"]
         assert_day(run, "w8", display=Display.NORMAL)
+    # B-01 推导：w3 企稳、确认且强恢复（87 ≥ 86）；DIRECT 时 xc 随之计数，w5 xc 达到 3 解除（T14）；
+    # TWO_STAGE 时 w5 dc 达到 3 降级（H_d = 89），w6、w7 H_d 随收盘上移，w8 rc 达到 3 解除
+    days = {
+        "w0": started("w0", "A"),
+        "w3": {
+            "prev_confirm": True,
+            "obs_issued": True,
+            "dc": 1,
+            "xc": 1 if direct else 0,
+            "events": [("STAB", 1), ("OBS", 1, 1)],
+        },
+        "w4": {"dc": 2, "xc": 2 if direct else 0},
+    }
+    if direct:
+        days |= {"w5": released("w5"), "w6": dict(NOEP)}
+    else:
+        days |= {
+            "w5": {
+                "level": "W",
+                "downgraded": True,
+                "h_d": 89.0,
+                "dc": 0,
+                "rc": 0,
+                "events": [("DOWN",)],
+            },
+            "w6": {"h_d": 90.0, "rc": 1},
+            "w7": {"h_d": 91.0, "rc": 2},
+            "w8": released("w8"),
+        }
+    check_days(run, days)
     assert run.invariants() == []
 
 
@@ -333,6 +444,21 @@ def test_S7_repeated_confirmation_identities_and_rerun() -> None:
     rerun = step(x4_state, run.labels["x5"], src, run.params)
     seen = {e.key for r in run.result.results for e in r.events}
     assert {e.key for e in rerun.events} <= seen
+    # B-01 推导：x3 确认（dc 1）；x4 撤销，证据为空 dc 归零；x5 再次确认（同周期第 2 次）
+    check_days(
+        run,
+        {
+            "x0": started("x0", "A"),
+            "x3": {
+                "prev_confirm": True,
+                "obs_issued": True,
+                "dc": 1,
+                "events": [("STAB", 1), ("OBS", 1, 1)],
+            },
+            "x4": {"prev_confirm": False, "dc": 0, "events": [("REV", 1, 1)]},
+            "x5": {"prev_confirm": True, "dc": 1, "events": [("OBS", 1, 2)]},
+        },
+    )
     assert run.invariants() == []
 
 
@@ -357,4 +483,23 @@ def test_S9_atr_changes_and_peak_leaves_window() -> None:
     for i in range(11, 71):
         assert_day(run, f"y{i}", since_obs=i, rc=0, display=Display.WATCH, d_ep=7.5, atr_ep=2.0)
         assert run.events(f"y{i}") == []
+    # B-01 推导：收盘恒等于 SMA10，确认始终不成立；y8 起长期稳定（证据 c），
+    # y10 降级，H_d = 85 不再变化
+    check_days(
+        run,
+        {
+            "y0": started("y0", "A"),
+            "y3": {"events": [("STAB", 1)]},
+            "y8": {"dc": 1},
+            "y9": {"dc": 2},
+            "y10": {
+                "level": "W",
+                "downgraded": True,
+                "h_d": 85.0,
+                "dc": 0,
+                "rc": 0,
+                "events": [("DOWN",)],
+            },
+        },
+    )
     assert run.invariants() == []

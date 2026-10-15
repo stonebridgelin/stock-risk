@@ -24,8 +24,21 @@ from stock_risk.domain.lifecycle.params import (
 from stock_risk.domain.lifecycle.runner import run_bars
 from stock_risk.domain.market_data import DailyBar
 from stock_risk.domain.observation import DayPresence
-from tests.unit.lifecycle.harness import FIXTURE_ASSUMPTIONS, START_DAY, weekdays
-from tests.unit.lifecycle.v08_harness import V0, V2, A, B, Day, Prior, Table, params, run_table
+from tests.unit.lifecycle import fields as fx
+from tests.unit.lifecycle.fields import check_days, released, reset_at, started
+from tests.unit.lifecycle.harness import FIXTURE_ASSUMPTIONS, START_DAY, Run, weekdays
+from tests.unit.lifecycle.v08_harness import (
+    V0,
+    V2,
+    A,
+    B,
+    Day,
+    Prior,
+    Table,
+    params,
+    prior_fields,
+    run_table,
+)
 
 E = EventType
 W, S, L = Level.WATCH, "S", "L"
@@ -56,6 +69,15 @@ def test_S23_t11_full_alert_condition(case, sw, close, escalates) -> None:  # ty
     else:
         assert run.events("t") == [] and rec.level is W
         assert rec.evidence == frozenset() and rec.rc == 0 and rec.h_d == 90
+    # B-01 推导：加重时观察重置进入周期 2，H_d 清空；
+    # 不加重时（情形 a）各字段同前态（无确认、无证据）
+    check_days(
+        run,
+        {"t": {**reset_at("t", 2), "level": "A", "h_d": None, "events": [("ESC",)]}}
+        if escalates
+        else {},
+        init=prior_fields(prior),
+    )
     assert run.invariants() == []
 
 
@@ -68,6 +90,12 @@ def test_S24_t10_full_alert_condition() -> None:
     assert rec.d_ep == pytest.approx(8.25) and rec.dd_ep == pytest.approx(0.165)
     assert rec.l_ep == 83.5 and rec.cycle_no == 2
     assert kinds(run, "t") == [E.ESCALATE]  # 不发 RECOVERY_FAIL、不发撤销
+    # B-01 推导：新低与 T10 同日，只重置一次（周期 2），H_d 清空
+    check_days(
+        run,
+        {"t": {**reset_at("t", 2), "level": "A", "h_d": None, "events": [("ESC",)]}},
+        init=prior_fields(prior),
+    )
     assert run.invariants() == []
 
 
@@ -99,6 +127,15 @@ def test_S25_s_path_percentage_floor_group_a() -> None:
     esc = run.event("r4", E.ESCALATE)
     assert (esc.transition, esc.basis["reason"]) == ("T9", "D_EP_GE_K2")
     assert run.rec("r4").new_low and run.rec("r4").dd_ep == pytest.approx(0.15)
+    # B-01 推导：r2 关注启动；r3 新低（周期 2）；r4 新低并 T9 加重（周期 3）
+    check_days(
+        run,
+        {
+            "r2": started("r2", "W"),
+            "r3": reset_at("r3", 2),
+            "r4": {**reset_at("r4", 3), "level": "A", "events": [("ESC",)]},
+        },
+    )
     assert run.invariants() == []
 
 
@@ -108,6 +145,18 @@ def test_S25_v0_contrast() -> None:
     alone = run_table(s25_table(False), params(V0))
     start = alone.event("r2", E.START)
     assert start.basis["reasons"] == ["R1_GE_K2"] and alone.rec("r2").level is Level.ALERT
+    # B-01 推导：V0 下 r1 关注启动；r2 新低且 D_ep = 4，T9 加重（周期 2）；r3、r4 继续新低
+    check_days(
+        run,
+        {
+            "r1": started("r1", "W"),
+            "r2": {**reset_at("r2", 2), "level": "A", "events": [("ESC",)]},
+            "r3": reset_at("r3", 3),
+            "r4": reset_at("r4", 4),
+        },
+    )
+    # 只从 r2 起运行：r2 以警戒启动，r3、r4 新低
+    check_days(alone, {"r2": started("r2", "A"), "r3": reset_at("r3", 2), "r4": reset_at("r4", 3)})
 
 
 # ---------------- S26 R2 的百分比下限 ----------------
@@ -126,10 +175,12 @@ def test_S26_r2_percentage_floor(case, floor, o, c) -> None:  # type: ignore[no-
     assert rec.d_t == pytest.approx((100 - c) / 2) and rec.dd_t == pytest.approx(1 - c / 100)
     if case == "a":
         assert run.events("r1") == [] and rec.r2_filtered is True
+        check_days(run, {})  # B-01 推导：被过滤，不启动
         return
     start = run.event("r1", E.START)
     assert rec.level is W
     assert start.basis["reasons"] == (["GAP"] if case == "b" else ["R1_GE_K1", "GAP"])
+    check_days(run, {"r1": started("r1", "W")})  # B-01 推导
     assert run.invariants() == []
 
 
@@ -150,6 +201,7 @@ def test_S27_long_window_independent_and_truncated_by_release() -> None:
     assert (rec.p_ep, rec.p_ep_day, rec.atr_ep, rec.l_ep) == (100, run.labels["r10"], 2, 91)
     assert rec.d_ep == pytest.approx(4.5) and rec.dd_ep == pytest.approx(0.09)
     assert rec.level is W and rec.entry_path == L
+    check_days(run, {"T": started("T", "W")}, init={"last_release": "r"})  # B-01 推导
     assert run.invariants() == []
 
 
@@ -181,6 +233,7 @@ def test_S28_long_peak_atr_unavailable(case, basis, atr_t, a_start, selected, d_
     assert v08["peak_component_atr"] == 3.0 and v08["atr_t"] == atr_t
     assert v08["a_start_selected"] == selected and v08["entry_path"] == L
     assert rec.atr_ep == a_start and rec.d_ep == pytest.approx(d_ep) and rec.level is W
+    check_days(run, {"T": started("T", "W")})  # B-01 推导
     assert run.invariants() == []
 
 
@@ -208,6 +261,7 @@ def test_S29_l_path_start_on_rebound_day() -> None:
     assert rec.d_ep == pytest.approx(6.0) and rec.dd_ep == pytest.approx(0.12)
     assert (88 - rec.l_ep) / rec.atr_ep == pytest.approx(4.0)  # U（推导：启动日不计算恢复进度）
     assert (rec.obs_start, rec.cycle_no) == (run.labels["T"], 1)
+    check_days(run, {"T": started("T", "W")})  # B-01 推导
     assert run.invariants() == []
 
 
@@ -233,6 +287,9 @@ def test_S30_disabled_semantics_v2(case, close, expect) -> None:  # type: ignore
     assert rec.evidence == expect and rec.d_ep == pytest.approx((100 - close) / 2)
     if case in "ab":
         assert rec.theta == 4.0  # V2：E₁ = k₁ × ATR_ep = 4
+    # B-01 推导：确认不成立（收盘低于 SMA10 = 99）；有证据时关注计 rc、警戒计 dc
+    cnt = {"b": {"rc": 1}, "d": {"dc": 1}}.get(case)
+    check_days(run, {"t": cnt} if cnt else {}, init=prior_fields(prior))
     assert run.invariants() == []
 
 
@@ -258,6 +315,9 @@ def test_S31a_percentage_dominates() -> None:
     assert rel.basis["reasons"] == ["a′"] and run.rec("4").rc_cand == 3
     old = run_table(Table(days), params(A), prior)  # release OLD：a′ 为 C > 98，四日都不成立
     assert all(old.rec(x).evidence == frozenset() for x in "1234")
+    # B-01 推导：B 组 2、3 证据 a′，4 解除；OLD 下四日无证据
+    check_days(run, {"2": {"rc": 1}, "3": {"rc": 2}, "4": released("4")}, init=prior_fields(prior))
+    check_days(old, {}, init=prior_fields(prior))
     assert run.invariants() == [] and old.invariants() == []
 
 
@@ -271,6 +331,8 @@ def test_S31b_atr_dominates(close, b_ok, old_ok) -> None:  # type: ignore[no-unt
         assert (run.rec("t").evidence == frozenset({"a′"})) is ok
         if sw is B:
             assert run.rec("t").theta == 10.0
+        # B-01 推导：a′ 成立时 rc 计 1，其余字段同前态
+        check_days(run, {"t": {"rc": 1}} if ok else {}, init=prior_fields(prior))
 
 
 # ---------------- S32 b′ 绕过回滞后解除（B 组） ----------------
@@ -293,23 +355,35 @@ def test_S32_strong_recovery_bypasses_hysteresis() -> None:
     assert kinds(run, "1") == [E.RECOVERY_OBS] and run.event("1", E.RECOVERY_OBS).identity[2] == 1
     assert run.events("2") == []
     assert kinds(run, "3") == [E.RELEASE] and run.event("3", E.RELEASE).basis["reasons"] == ["b′"]
+    # B-01 推导：1 确认（第 1 次）且强恢复，H_d 随收盘上移；3 解除
+    check_days(
+        run,
+        {
+            "1": {
+                "prev_confirm": True,
+                "obs_issued": True,
+                "h_d": 88.0,
+                "rc": 1,
+                "events": [("OBS", 1, 1)],
+            },
+            "2": {"h_d": 88.5, "rc": 2},
+            "3": released("3"),
+        },
+        init=prior_fields(prior),
+    )
     assert run.invariants() == []
 
 
 # ---------------- S33 恢复尺度缩放后解除、随后再跌（B 组） ----------------
 
 
+PRIOR_S33 = Prior(
+    W, l_ep=10, entry_path=S, delta_start=20, atr_ep=6, downgraded=True, h_d=11.5, stabilized=True
+)
+
+
 def s33_run(rec_scale: RecScale):  # type: ignore[no-untyped-def]
-    prior = Prior(
-        W,
-        l_ep=10,
-        entry_path=S,
-        delta_start=20,
-        atr_ep=6,
-        downgraded=True,
-        h_d=11.5,
-        stabilized=True,
-    )
+    prior = PRIOR_S33
     days = [
         Day("1", 12.0, sma=11.0, atr=6),
         Day("2", 12.2, sma=11.2, atr=6),
@@ -338,6 +412,23 @@ def test_S33_price_scale_release_then_restart() -> None:
     assert r5.d_t == pytest.approx(2.0) and r5.dd_t == pytest.approx(1 - 11.2 / 12.4)
     assert (r5.p_ep, r5.p_ep_day, r5.atr_ep, r5.l_ep) == (12.4, run.labels["3"], 0.6, 11.2)
     assert r5.episode_id != run.rec("1").episode_id
+    # B-01 推导：1 确认且强恢复；3 解除；4 无预警（last_release = 3）；5 以关注重新启动
+    check_days(
+        run,
+        {
+            "1": {
+                "prev_confirm": True,
+                "obs_issued": True,
+                "h_d": 12.0,
+                "rc": 1,
+                "events": [("OBS", 1, 1)],
+            },
+            "2": {"h_d": 12.2, "rc": 2},
+            "3": released("3"),
+            "5": started("5", "W"),
+        },
+        init=prior_fields(PRIOR_S33),
+    )
     assert run.invariants() == []
 
 
@@ -348,6 +439,17 @@ def test_S33_off_scale_no_release() -> None:
     assert r1.evidence == frozenset() and kinds(run, "1") == [E.RECOVERY_OBS]
     assert run.rec("2").evidence == frozenset() and run.rec("3").evidence == frozenset()
     assert run.rec("3").level is W and all(e.type is not E.RELEASE for e in run.result.events)
+    # B-01 推导：1 确认（无强恢复，rc 0）；H_d 随收盘升至 12.4；4 收盘等于 SMA10，确认消失并撤销
+    check_days(
+        run,
+        {
+            "1": {"prev_confirm": True, "obs_issued": True, "h_d": 12.0, "events": [("OBS", 1, 1)]},
+            "2": {"h_d": 12.2},
+            "3": {"h_d": 12.4},
+            "4": {"prev_confirm": False, "events": [("REV", 1, 1)]},
+        },
+        init=prior_fields(PRIOR_S33),
+    )
 
 
 # ---------------- S34 I21：证据交替的解除原因（V0） ----------------
@@ -371,6 +473,16 @@ def test_S34_i21_alternating_evidence_release_reason() -> None:
     rel = run.event("3", E.RELEASE)
     assert rel.basis["reasons"] == ["a′"] and rel.basis["segment"] == [["a′"], ["b′"], ["a′"]]
     assert kinds(run, "3") == [E.RELEASE]  # 当日不发 RECOVERY_REVOKED
+    # B-01 推导：1 只有 a′，H_d 升至 96.5；2 确认（第 1 次）且强恢复；3 解除，当日不撤销
+    check_days(
+        run,
+        {
+            "1": {"h_d": 96.5, "rc": 1},
+            "2": {"prev_confirm": True, "obs_issued": True, "rc": 2, "events": [("OBS", 1, 1)]},
+            "3": released("3"),
+        },
+        init=prior_fields(prior),
+    )
     assert run.invariants() == []
 
 
@@ -400,6 +512,9 @@ def test_S35_tr_across_missing_day_and_rewarm_after_break() -> None:
     assert seg2[81].display is Display.INSUFFICIENT and seg2[82].display is Display.NORMAL
     seg_src = ComputedIndicators(cal2, flat[14 : 14 + 83])
     assert seg_src.atr(flat[14 + 19].day, 20) is None and seg_src.atr(flat[14 + 20].day, 20) == 2
+    # B-01 推导：平盘，各日无预警；4 个缺价日（第 4 日为断点，无预警故无 DATA_BREAK）只有 DATA_ISSUE
+    gap = {f"m{i}": flat[10 + i].day for i in range(4)}
+    check_days(Run(gap, out, params(V0)), {k: {"events": [("ISSUE",)]} for k in gap}, symbol="X")
 
 
 # ---------------- S36 非法组合 ----------------
@@ -447,6 +562,14 @@ def test_S37_l_path_no_release_without_rebound(case, sw, released) -> None:  # t
     else:
         assert run.rec("1").theta == 8.0
         assert all(run.rec(x).rc == 0 for x in "123") and run.rec("3").level is W
+    # B-01 推导：0 关注启动；B 组 a′ 不成立，3 为 since_obs = 3，STABILIZED（周期 1）；
+    # A 组（OLD）a′ 成立，1、2 计数，3 解除（解除日不发 STABILIZED）
+    if released:
+        check_days(
+            run, {"0": started("0", "W"), "1": {"rc": 1}, "2": {"rc": 2}, "3": fx.released("3")}
+        )
+    else:
+        check_days(run, {"0": started("0", "W"), "3": {"events": [("STAB", 1)]}})
     assert run.invariants() == []
 
 
@@ -469,4 +592,12 @@ def test_S38_r_path_no_release_without_rebound(sw, released) -> None:  # type: i
         assert run.rec("r2").theta == 3.0
         assert all(run.rec(x).rc == 0 for x in ("r2", "r3", "r4"))
         assert run.rec("r4").level is W
+    # B-01 推导：同 S37；r4 为 since_obs = 3
+    if released:
+        check_days(
+            run,
+            {"r1": started("r1", "W"), "r2": {"rc": 1}, "r3": {"rc": 2}, "r4": fx.released("r4")},
+        )
+    else:
+        check_days(run, {"r1": started("r1", "W"), "r4": {"events": [("STAB", 1)]}})
     assert run.invariants() == []

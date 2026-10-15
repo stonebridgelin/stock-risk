@@ -10,8 +10,9 @@ from stock_risk.domain.lifecycle.model import DataStatus, Display, EventType, Le
 from stock_risk.domain.lifecycle.params import FIXED, AtrBasis, ReleasePath
 from stock_risk.domain.lifecycle.runner import run_with_source
 from stock_risk.domain.numeric import quantize_price
+from tests.unit.lifecycle.fields import check_days, released, reset_at, started
 from tests.unit.lifecycle.harness import START_DAY, SYMBOL, Run, f_bars, params, s_run, weekdays
-from tests.unit.lifecycle.test_fixtures_s1_s9 import S1_ROWS, assert_day
+from tests.unit.lifecycle.test_fixtures_s1_s9 import S1_DAYS, S1_ROWS, assert_day
 
 E = EventType
 DIRECT, TWO = ReleasePath.DIRECT, ReleasePath.TWO_STAGE
@@ -63,6 +64,50 @@ def test_S10_direct_release_monotonicity(path: str) -> None:
         assert rel.transition == "T14" and rel.basis["reasons"] == ["DIRECT_STRONG_RECOVERY"]
         assert run.rec("d7").dc_cand == 3 and run.rec("d7").xc_cand == 3
     assert run.rec("d7").display is Display.NORMAL
+    # B-01 推导：甲 d4 确认（dc 1），d5 强恢复起 xc 计数，d6 降级（H_d = 89，xc 保留 2），
+    # d7 xc 达到 3 解除；
+    # 乙 d4 只企稳，d5 确认且强恢复，d7 dc 与 xc 同时达到 3，T14 解除
+    if path == "甲":
+        check_days(
+            run,
+            {
+                "d1": started("d1", "A"),
+                "d4": {
+                    "prev_confirm": True,
+                    "obs_issued": True,
+                    "dc": 1,
+                    "events": [("STAB", 1), ("OBS", 1, 1)],
+                },
+                "d5": {"dc": 2, "xc": 1},
+                "d6": {
+                    "level": "W",
+                    "downgraded": True,
+                    "h_d": 89.0,
+                    "dc": 0,
+                    "rc": 0,
+                    "xc": 2,
+                    "events": [("DOWN",)],
+                },
+                "d7": released("d7"),
+            },
+        )
+    else:
+        check_days(
+            run,
+            {
+                "d1": started("d1", "A"),
+                "d4": {"events": [("STAB", 1)]},
+                "d5": {
+                    "prev_confirm": True,
+                    "obs_issued": True,
+                    "dc": 1,
+                    "xc": 1,
+                    "events": [("OBS", 1, 1)],
+                },
+                "d6": {"dc": 2, "xc": 2},
+                "d7": released("d7"),
+            },
+        )
     assert run.invariants() == []
 
 
@@ -97,6 +142,31 @@ def test_S11_shallow_drop_release_by_half_recovery() -> None:
     assert run.event("d5", E.DOWNGRADE).basis["reasons"] == ["a", "b"]
     assert run.rec("d8").rc_cand == 3
     assert run.event("d8", E.RELEASE).basis["reasons"] == ["b′"]
+    # B-01 推导：d3 起证据 a，d4 确认；d5 降级（H_d = 93.5，此后收盘不高于 93.5）；d6–d8 b′，d8 解除
+    check_days(
+        run,
+        {
+            "d1": started("d1", "A"),
+            "d3": {"dc": 1},
+            "d4": {
+                "prev_confirm": True,
+                "obs_issued": True,
+                "dc": 2,
+                "events": [("STAB", 1), ("OBS", 1, 1)],
+            },
+            "d5": {
+                "level": "W",
+                "downgraded": True,
+                "h_d": 93.5,
+                "dc": 0,
+                "rc": 0,
+                "events": [("DOWN",)],
+            },
+            "d6": {"rc": 1},
+            "d7": {"rc": 2},
+            "d8": released("d8"),
+        },
+    )
     assert run.invariants() == []
 
 
@@ -124,6 +194,20 @@ def test_S12_start_denominator_peak_vs_min(basis: AtrBasis) -> None:
         esc = run.event("d42", E.ESCALATE)
         assert esc.transition == "T9" and esc.basis["reason"] == "D_EP_GE_K2"
         assert_day(run, "d43", d_ep=11.5 / 1.2, level=Level.ALERT)
+    # B-01 推导：PEAK 全程无预警；MIN 在 d41 以关注启动，
+    # d42 新低且 T9 加重（同日只重置一次，周期 2），
+    # d43 再创新低（周期 3）；从未发出恢复观察，不发 RECOVERY_FAIL
+    if basis is AtrBasis.PEAK:
+        check_days(run, {})
+    else:
+        check_days(
+            run,
+            {
+                "d41": started("d41", "W"),
+                "d42": {**reset_at("d42", 2), "level": "A", "events": [("ESC",)]},
+                "d43": reset_at("d43", 3),
+            },
+        )
     assert run.invariants() == []
 
 
@@ -134,6 +218,8 @@ def test_S12_cost_example(basis: AtrBasis, starts: bool) -> None:
     run = s_run([("q1", 98.9, None)], params(basis=basis), atr={"q1": 0.5})
     assert_day(run, "q1", d_t=2.2 if starts else 0.55)
     assert (run.types("q1") == [E.START]) is starts
+    # B-01 推导：D = 2.2 时以关注启动（2 ≤ D < 4）
+    check_days(run, {"q1": started("q1", "W")} if starts else {})
 
 
 def test_S13_progress_on_escalation_day() -> None:
@@ -182,6 +268,41 @@ def test_S13_progress_on_escalation_day() -> None:
         (E.RECOVERY_OBS, eid, 2, 1),
     }
     assert_day(run, "d10", dc=1)
+    # B-01 推导：d4 确认，d6 降级（H_d = 90）；d7 回吐 2，T11 加重：观察重置进入周期 2，H_d 清空，
+    # 撤销周期 1 的确认（ESCALATED）；d10 周期 2 企稳并确认
+    check_days(
+        run,
+        {
+            "d1": started("d1", "A"),
+            "d4": {
+                "prev_confirm": True,
+                "obs_issued": True,
+                "dc": 1,
+                "events": [("STAB", 1), ("OBS", 1, 1)],
+            },
+            "d5": {"dc": 2},
+            "d6": {
+                "level": "W",
+                "downgraded": True,
+                "h_d": 90.0,
+                "dc": 0,
+                "rc": 0,
+                "events": [("DOWN",)],
+            },
+            "d7": {
+                **reset_at("d7", 2),
+                "level": "A",
+                "h_d": None,
+                "events": [("ESC",), ("REV", 1, 1)],
+            },
+            "d10": {
+                "prev_confirm": True,
+                "obs_issued": True,
+                "dc": 1,
+                "events": [("STAB", 2), ("OBS", 2, 1)],
+            },
+        },
+    )
     assert run.invariants() == []
 
 
@@ -231,6 +352,22 @@ def test_S15_release_from_watch() -> None:
     rel = run.event("d7", E.RELEASE)
     assert rel.basis["reasons"] == ["a′", "b′"]  # I21：d7 当日证据 {a′, b′}
     assert run.rec("d7").display is Display.NORMAL
+    # B-01 推导：d2 新低（周期 2），不加重；d5 确认，rc 自 d5 起计数；未降级，H_d 始终为空
+    check_days(
+        run,
+        {
+            "d1": started("d1", "W"),
+            "d2": reset_at("d2", 2),
+            "d5": {
+                "prev_confirm": True,
+                "obs_issued": True,
+                "rc": 1,
+                "events": [("STAB", 2), ("OBS", 2, 1)],
+            },
+            "d6": {"rc": 2},
+            "d7": released("d7"),
+        },
+    )
     assert run.invariants() == []
 
 
@@ -288,6 +425,34 @@ def test_S16_interrupted_strong_recovery_does_not_release() -> None:
     assert rel.basis["reasons"] == ["DIRECT_STRONG_RECOVERY", "b′"]
     assert rel.basis["today_evidence"] == ["b′"] and rel.basis["strong"] is True
     assert run.types("d10") == [E.RELEASE]
+    # B-01 推导（日末计数取自上表；H_d、确认状态与事件按规则）：d6 降级 H_d = 89；d7 撤销；
+    # d8 同周期第 2 次确认，H_d = 91；d9 H_d = 92；d10 解除
+    check_days(
+        run,
+        {
+            "d1": started("d1", "A"),
+            "d4": {
+                "prev_confirm": True,
+                "obs_issued": True,
+                "dc": 1,
+                "events": [("STAB", 1), ("OBS", 1, 1)],
+            },
+            "d5": {"dc": 2, "xc": 1},
+            "d6": {
+                "level": "W",
+                "downgraded": True,
+                "h_d": 89.0,
+                "dc": 0,
+                "rc": 0,
+                "xc": 2,
+                "events": [("DOWN",)],
+            },
+            "d7": {"prev_confirm": False, "xc": 0, "events": [("REV", 1, 1)]},
+            "d8": {"prev_confirm": True, "h_d": 91.0, "rc": 1, "xc": 1, "events": [("OBS", 1, 2)]},
+            "d9": {"h_d": 92.0, "rc": 2, "xc": 2},
+            "d10": released("d10"),
+        },
+    )
     assert run.invariants() == []
 
 
@@ -345,6 +510,27 @@ def test_S17_consecutive_missing_after_confirmation() -> None:
         (E.STABILIZED, eid, 3),
         (E.RECOVERY_OBS, eid, 3, 1),
     }
+    # B-01 推导：x4 缺价撤销周期 1 的确认并重置（周期 2），x5 再重置（周期 3）；x8 周期 3 企稳并确认
+    check_days(
+        run,
+        {
+            "x0": started("x0", "A"),
+            "x3": {
+                "prev_confirm": True,
+                "obs_issued": True,
+                "dc": 1,
+                "events": [("STAB", 1), ("OBS", 1, 1)],
+            },
+            "x4": {**reset_at("x4", 2), "events": [("REV", 1, 1), ("ISSUE",)]},
+            "x5": {**reset_at("x5", 3), "events": [("ISSUE",)]},
+            "x8": {
+                "prev_confirm": True,
+                "obs_issued": True,
+                "dc": 1,
+                "events": [("STAB", 3), ("OBS", 3, 1)],
+            },
+        },
+    )
     assert run.invariants() == []
 
 
@@ -362,6 +548,17 @@ def test_S18_no_progress_events_on_release_day(release: ReleasePath) -> None:
     assert rec.xc_cand == (1 if release is DIRECT else 0)
     assert run.types("d4") == [E.RELEASE]  # 只有 RELEASE
     assert run.event("d4", E.RELEASE).basis["reasons"] == ["a′", "b′"]
+    # B-01 推导：d2、d3 证据 a′；d4 解除，当日确认成立但不发进度事件，
+    # prev_confirm、obs_issued 保持为否
+    check_days(
+        run,
+        {
+            "d1": started("d1", "W"),
+            "d2": {"rc": 1},
+            "d3": {"rc": 2},
+            "d4": released("d4"),
+        },
+    )
     assert run.invariants() == []
 
 
@@ -390,6 +587,8 @@ def test_S19_gap_start_and_missing_previous_day(case: str) -> None:
         assert (rec.r2_status, rec.r2_score) == ("MISSING_DATA", None)
         assert rec.d_t == pytest.approx(1.5) and rec.display is Display.NORMAL
         assert run.events("r1") == []
+        # B-01 推导：r0 缺价（无预警，只有 DATA_ISSUE），r1 不启动
+        check_days(run, {"r0": {"events": [("ISSUE",)]}})
         return
     assert run.rec("r0").display is Display.NORMAL and run.rec("r0").d_t == 0
     assert rec.r2_status == "OK" and rec.r2_score == pytest.approx(-3.5 if case == "a" else -3.0)
@@ -403,6 +602,7 @@ def test_S19_gap_start_and_missing_previous_day(case: str) -> None:
         97.0,
     )
     assert rec.d_ep == pytest.approx(1.5)
+    check_days(run, {"r1": started("r1", "W")})  # B-01 推导：r1 以关注启动，此前无预警
     assert run.invariants() == []
 
 
@@ -416,12 +616,14 @@ def test_S21a_S21b_history_length(n: int, short: int) -> None:
     recs = [r.record for r in run.results]
     assert recs[short - 1].display is Display.INSUFFICIENT  # 第 short 条：不可计算（S21a）
     assert recs[short].display is Display.NORMAL  # 第 short + 1 条：可计算（S21b）
+    check_days(Run({}, run, p), {})  # B-01 推导：平盘，各日无预警、无事件
 
 
 @pytest.mark.parametrize(("close", "starts"), [(96 + 1e-10, True), (96 + 4e-10, False)])
 def test_S21c_S21d_start_boundary_eps_ratio(close: float, starts: bool) -> None:
     run = s_run([("q1", close, None)], params())
     assert (run.types("q1") == [E.START]) is starts
+    check_days(run, {"q1": started("q1", "W")} if starts else {})  # B-01 推导：D_T ≈ 2，关注
 
 
 @pytest.mark.parametrize(("close", "new_low"), [(80 - 5e-10, False), (80 - 2e-9, True)])
@@ -429,6 +631,8 @@ def test_S21e_S21f_new_low_boundary_eps_price(close: float, new_low: bool) -> No
     run = s_run([("q0", 80, None), ("q1", close, None)], params())
     assert run.rec("q1").new_low is new_low
     assert run.rec("q1").cycle_no == (2 if new_low else 1)
+    # B-01 推导：q0 以警戒启动（D_T = 10）；q1 为新低时观察重置进入周期 2
+    check_days(run, {"q0": started("q0", "A"), **({"q1": reset_at("q1", 2)} if new_low else {})})
 
 
 def test_S21h_quantized_input_starts(tmp_path: Path) -> None:
@@ -462,6 +666,8 @@ def test_S21h_quantized_input_starts(tmp_path: Path) -> None:
     out = run_bars(SYMBOL, cal, data.presence, data.history.bars, p)
     last = out.results[-1]
     assert last.record.d_t == 2.0 and [e.type for e in last.events] == [E.START]
+    # B-01 推导：此前各日无预警；最后一日以关注启动（D_T = 2）
+    check_days(Run({"q": day}, out, p), {"q": started("q", "W")})
     # 对照：不量化时 D_T = 1.9999998，不启动
     assert 2 - p.tol.eps_ratio > (100 - 96.0000004) / 2
 
@@ -503,6 +709,21 @@ def test_S22_revoked_then_recovery_fail() -> None:
     fail = run.event("y6", E.RECOVERY_FAIL)
     assert fail.identity == (eid, 1) and fail.basis["reason"] == "NEW_LOW"
     assert run.types("y6") == [E.RECOVERY_FAIL]  # 不再发撤销
+    # B-01 推导：y4 确认，y5 撤销；y6 新低进入周期 2，发出周期 1 的 RECOVERY_FAIL
+    check_days(
+        run,
+        {
+            "y1": started("y1", "A"),
+            "y4": {
+                "prev_confirm": True,
+                "obs_issued": True,
+                "dc": 1,
+                "events": [("STAB", 1), ("OBS", 1, 1)],
+            },
+            "y5": {"prev_confirm": False, "dc": 0, "events": [("REV", 1, 1)]},
+            "y6": {**reset_at("y6", 2), "events": [("FAIL", 1)]},
+        },
+    )
     assert run.invariants() == []
 
 
@@ -527,4 +748,15 @@ def test_I21_release_reason_is_todays_evidence_with_alternating_segment() -> Non
     rel = run.event("r3", E.RELEASE)
     assert rel.basis["reasons"] == ["b′"]
     assert rel.basis["segment"] == [["a′"], ["a′"], ["b′"]]
+    # B-01 推导：s0–s6 同 S1；r1 确认消失（撤销周期 2 第 1 次），H_d 升至 97；r3 解除
+    s1_part = {k: v for k, v in S1_DAYS.items() if k in {"s0", "s1", "s4", "s5", "s6"}}
+    check_days(
+        run,
+        {
+            **s1_part,
+            "r1": {"prev_confirm": False, "h_d": 97.0, "rc": 1, "events": [("REV", 2, 1)]},
+            "r2": {"rc": 2},
+            "r3": released("r3"),
+        },
+    )
     assert run.invariants() == []

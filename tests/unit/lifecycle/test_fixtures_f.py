@@ -10,6 +10,7 @@ import pytest
 
 from stock_risk.domain.lifecycle.model import Display, EventType, Level
 from stock_risk.domain.lifecycle.params import FIXED, AtrBasis, Confirm, ReleasePath
+from tests.unit.lifecycle.fields import check_days, released, reset_at, started
 from tests.unit.lifecycle.harness import SYMBOL, Run, f_run, params
 
 E = EventType
@@ -104,6 +105,178 @@ OBS_METRICS = {
 }
 
 
+# ---- B-01 逐日全字段（推导） ----
+# 记法见 tests/unit/lifecycle/fields.py。推导所用的量：
+# - F1：c1 新低后 L_ep = 69，强恢复门槛 69 + min(6, 15.5) = 75；SMA10 在 c4–c12 依次为
+#   85.5、83.1、80.9、78.9、77.1、75.5、77.1、79.0、81.0；BOX 区间 c2–c4，box_high = 74。
+# - F2：e10 后 L_ep = 80，门槛 80 + min(6, 10) = 86；SMA10 在 e13–e23 依次为 85.3、84.4、83.8、
+#   83.5、83.5、83.8、84.4、85.3、86.2、86.5、87.5；BOX 区间 e11–e13，box_high = 88；
+#   e18 起 since_obs ≥ 8（证据 c）。
+# - F3：f2 后 L_ep = 78，门槛 84（不可达）；SMA10 在 f6 为 87.75；box_high = 80（f3–f5）。
+# - F4：g10 后 L_ep = 80，门槛 86（不可达）；SMA10 在 g14、g15 为 84.3、83.75；box_high = 86。
+# - F5：h2 后 L_ep = 69，门槛 75（不可达）；SMA10 在 h9、h10 为 74.15、71.55；box_high = 71；
+#   h10 since_obs = 8。
+# BOX_ROLL 的确认线是前 3 个有效交易日的最高收盘，各路径中与 BOX 同日首次成立（F2 除外，见下）。
+def _cycles(prefix: str, first: int, last: int, cycle: int) -> dict:
+    """连续新低：每日观察重置，周期依次加一。"""
+    return {
+        f"{prefix}{i}": reset_at(f"{prefix}{i}", cycle + i - first) for i in range(first, last + 1)
+    }
+
+
+def _down(h_d: float, **more) -> dict:
+    return {
+        "level": "W",
+        "downgraded": True,
+        "h_d": h_d,
+        "dc": 0,
+        "rc": 0,
+        "events": [("DOWN",)],
+        **more,
+    }
+
+
+def _obs(cycle: int, dc: int, **more) -> dict:
+    return {
+        "prev_confirm": True,
+        "obs_issued": True,
+        "dc": dc,
+        "events": [("OBS", cycle, 1)],
+        **more,
+    }
+
+
+def _f1(confirm: Confirm, release: ReleasePath) -> dict:
+    days = {"c0": started("c0", "A"), "c1": reset_at("c1", 2), "c4": {"events": [("STAB", 2)]}}
+    direct = release is DIRECT
+    if confirm is SMA:  # c7 确认；c9 dc 达到 3（b、c）降级；DIRECT 时 c7 起强恢复，c9 xc 达到 3
+        days |= {"c7": _obs(2, 1, xc=int(direct)), "c8": {"dc": 2, "xc": 2 * direct}}
+        if direct:
+            return days | {"c9": released("c9")}
+        return days | {
+            "c9": _down(84.0),
+            "c10": {"h_d": 86.0, "rc": 1},
+            "c11": {"h_d": 88.0, "rc": 2},
+            "c12": released("c12"),
+        }
+    if confirm is BOX:
+        days["c4"] = {"box_high": 74.0, "events": [("STAB", 2)]}
+    days |= {"c5": _obs(2, 1, xc=int(direct)), "c6": {"dc": 2, "xc": 2 * direct}}
+    if direct:
+        return days | {"c7": released("c7")}
+    return days | {
+        "c7": _down(80.0),
+        "c8": {"h_d": 82.0, "rc": 1},
+        "c9": {"h_d": 84.0, "rc": 2},
+        "c10": released("c10"),
+    }
+
+
+def _f2(confirm: Confirm, release: ReleasePath) -> dict:
+    days = {
+        "e2": started("e2", "W"),
+        "e3": reset_at("e3", 2),
+        "e4": {**reset_at("e4", 3), "level": "A", "events": [("ESC",)]},
+        **_cycles("e", 5, 10, 4),
+        "e13": {"events": [("STAB", 9)]},
+    }
+    direct = release is DIRECT
+    if confirm is SMA:  # e15 确认；e17 降级（强恢复自 e17 起，86 ≥ 86）
+        days |= {"e15": _obs(9, 1), "e16": {"dc": 2}, "e17": _down(86.0, xc=int(direct))}
+        if direct:
+            return days | {"e18": {"h_d": 87.0, "rc": 1, "xc": 2}, "e19": released("e19")}
+        return days | {
+            "e18": {"h_d": 87.0, "rc": 1},
+            "e19": {"h_d": 88.0, "rc": 2},
+            "e20": released("e20"),
+        }
+    if confirm is BOX:  # e18 起证据 c；e20 首次突破 88，确认与降级同日（b、c）
+        days["e13"] = {"box_high": 88.0, "events": [("STAB", 9)]}
+        days |= {
+            "e18": {"dc": 1},
+            "e19": {"dc": 2},
+            "e20": {
+                **_down(89.0, xc=int(direct)),
+                "prev_confirm": True,
+                "obs_issued": True,
+                "events": [("OBS", 9, 1), ("DOWN",)],
+            },
+        }
+        if direct:
+            return days | {"e21": {"h_d": 90.0, "rc": 1, "xc": 2}, "e22": released("e22")}
+        return days | {
+            "e21": {"h_d": 90.0, "rc": 1},
+            "e22": {"h_d": 91.0, "rc": 2},
+            "e23": released("e23"),
+        }
+    # BOX_ROLL：e16 收盘 85 高于 e13–e15 的最高 84，首次确认；e18 降级（b、c）
+    days |= {
+        "e16": _obs(9, 1),
+        "e17": {"dc": 2, "xc": int(direct)},
+        "e18": _down(87.0, xc=2 * direct),
+    }
+    if direct:
+        return days | {"e19": released("e19")}
+    return days | {
+        "e19": {"h_d": 88.0, "rc": 1},
+        "e20": {"h_d": 89.0, "rc": 2},
+        "e21": released("e21"),
+    }
+
+
+def _f3(confirm: Confirm) -> dict:
+    days = {
+        "f1": started("f1", "A"),
+        "f2": reset_at("f2", 2),
+        "f5": {"events": [("STAB", 2)]},
+        "f7": reset_at("f7", 3),
+    }
+    if confirm is SMA:
+        return days
+    if confirm is BOX:
+        days["f5"] = {"box_high": 80.0, "events": [("STAB", 2)]}
+    return days | {"f6": _obs(2, 1), "f7": {**reset_at("f7", 3), "events": [("FAIL", 2)]}}
+
+
+def _f4(confirm: Confirm) -> dict:
+    days = {
+        "g2": started("g2", "W"),
+        "g3": reset_at("g3", 2),
+        "g4": {**reset_at("g4", 3), "level": "A", "events": [("ESC",)]},
+        **_cycles("g", 5, 10, 4),
+        "g13": {"events": [("STAB", 9)]},
+        "g16": reset_at("g16", 10),
+    }
+    if confirm is BOX:  # g14、g15 未突破 86
+        days["g13"] = {"box_high": 86.0, "events": [("STAB", 9)]}
+        return days
+    return days | {"g15": _obs(9, 1), "g16": {**reset_at("g16", 10), "events": [("FAIL", 9)]}}
+
+
+def _f5(confirm: Confirm) -> dict:
+    days = {"h1": started("h1", "A"), "h2": reset_at("h2", 2), "h5": {"events": [("STAB", 2)]}}
+    if confirm is SMA:  # h10 确认，同日 since_obs = 8，证据 b、c
+        return days | {"h10": _obs(2, 1)}
+    if confirm is BOX:
+        days["h5"] = {"box_high": 71.0, "events": [("STAB", 2)]}
+    # h6 确认；h8 降级 H_d = 73；此后无 a′、b′，rc 为 0，H_d 随收盘上移
+    return days | {
+        "h6": _obs(2, 1),
+        "h7": {"dc": 2},
+        "h8": _down(73.0),
+        "h9": {"h_d": 73.5},
+        "h10": {"h_d": 74.0},
+    }
+
+
+def expected_days(path: str, confirm: Confirm, release: ReleasePath) -> dict:
+    if path == "F1":
+        return _f1(confirm, release)
+    if path == "F2":
+        return _f2(confirm, release)
+    return {"F3": _f3, "F4": _f4, "F5": _f5}[path](confirm)  # 两种解除路径相同（不可达强恢复）
+
+
 def run_path(
     name: str, confirm: Confirm, release: ReleasePath, basis: AtrBasis, upto: int | None = None
 ) -> Run:
@@ -150,6 +323,7 @@ def test_F_paths_events(path: str, confirm: Confirm, release: ReleasePath, basis
     need = FIXED.w + 20  # W + N
     assert all(rec.display is Display.INSUFFICIENT for rec in recs[: need - 1])
     assert recs[need - 1].display is Display.NORMAL and recs[89].display is Display.NORMAL
+    check_days(run, expected_days(path, confirm, release))
     assert run.invariants() == []
 
 
