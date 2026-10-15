@@ -14,7 +14,7 @@ from collections.abc import Callable
 from datetime import date
 from typing import Any
 
-from stock_risk.application.ports import PriceSourceError
+from stock_risk.application.ports import PriceSourceError, RateLimitError
 from stock_risk.domain.market_data import PriceHistory
 from stock_risk.infrastructure.tiingo.mapper import to_history
 
@@ -52,6 +52,12 @@ class TiingoPriceSource:
         self._sleep = sleep
         self._clock = clock
         self._last_request: float | None = None
+        self._requests = 0
+
+    @property
+    def request_count(self) -> int:
+        """已发出的请求数（含重试）。"""
+        return self._requests
 
     def fetch(self, ticker: str, start: date, end: date) -> PriceHistory | None:
         url = (
@@ -85,6 +91,7 @@ class TiingoPriceSource:
         )
         for attempt in range(1, self._max_retries + 1):
             self._throttle()
+            self._requests += 1
             try:
                 return self._transport(req)
             except urllib.error.HTTPError as e:
@@ -93,6 +100,8 @@ class TiingoPriceSource:
                 if e.code == 429 and attempt < self._max_retries:
                     self._sleep(self._backoff * attempt)
                     continue
+                if e.code == 429:  # 连续 max_retries 次 429
+                    raise RateLimitError(f"HTTP 429（连续 {attempt} 次）") from e
                 raise PriceSourceError(f"HTTP {e.code}") from e
             except urllib.error.URLError as e:
                 if attempt < self._max_retries:

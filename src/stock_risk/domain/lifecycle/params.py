@@ -67,7 +67,8 @@ class Candidate:
         for name in ("n", "k", "d"):
             _positive_int(name, getattr(self, name))
         k1, k2 = _finite("k1", self.k1), _finite("k2", self.k2)
-        _finite("u_rel", self.u_rel)
+        if not _finite("u_rel", self.u_rel) > 0:  # T08d-1 第 4A 节
+            raise InvalidParameter(f"必须 u_rel > 0，实际 {self.u_rel}")
         if not 0 < k1 < k2:
             raise InvalidParameter(f"必须 0 < k₁ < k₂，实际 k₁ = {k1}、k₂ = {k2}")
 

@@ -75,10 +75,24 @@ class Settings:
     tiingo_api_key: Secret = field(repr=False)
     fred_api_key: Secret = field(repr=False)
     mysql_verify_url: Secret = field(repr=False)
+    # fetch-batch 额度（T08d-1）：.env 或环境变量 TIINGO_PER_HOUR / TIINGO_PER_DAY /
+    # TIINGO_UNIQUE_PER_MONTH；未设置时由命令行或默认值（免费档）决定
+    tiingo_per_hour: int | None = None
+    tiingo_per_day: int | None = None
+    tiingo_unique_per_month: int | None = None
 
     @property
     def raw_data_dir(self) -> Path:
         return self.project_root / "data" / "raw"
+
+    @property
+    def selection_raw_dir(self) -> Path:
+        """选参集日线的默认目录（与探索集的 data/raw 分开）。"""
+        return self.project_root / "data" / "raw_selection"
+
+    @property
+    def universe_probe_dir(self) -> Path:
+        return self.project_root / "data" / "universe_probe"
 
     @property
     def exploration_universe_file(self) -> Path:
@@ -123,9 +137,16 @@ def load_settings(project_root: Path = PROJECT_ROOT) -> Settings:
     def get(key: str) -> str:
         return os.environ.get(key) or file_values.get(key, "")
 
+    def get_int(key: str) -> int | None:
+        v = get(key).strip()
+        return int(v) if v else None
+
     return Settings(
         project_root=project_root,
         tiingo_api_key=Secret(get("TIINGO_API_KEY")),
         fred_api_key=Secret(get("FRED_API_KEY")),
         mysql_verify_url=Secret(get("MYSQL_VERIFY_URL")),
+        tiingo_per_hour=get_int("TIINGO_PER_HOUR"),
+        tiingo_per_day=get_int("TIINGO_PER_DAY"),
+        tiingo_unique_per_month=get_int("TIINGO_UNIQUE_PER_MONTH"),
     )

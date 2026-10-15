@@ -140,10 +140,7 @@ class FetchRawDataService:
         return self._save(member, ticker, stitched, records)
 
     def _fail(self, member: UniverseMember, error: str) -> FetchOutcome:
-        outcome = FetchOutcome(member.symbol, member.category, ok=False, error=error)
-        self._repo.record_failure(outcome)
-        self._progress(f"    失败: {error}")
-        return outcome
+        return record_failure(self._repo, member, error, self._progress)
 
     def _save(
         self,
@@ -152,22 +149,48 @@ class FetchRawDataService:
         history: PriceHistory,
         segments: tuple[SegmentRecord, ...] = (),
     ) -> FetchOutcome:
-        assert_sealed(history)
-        outcome = FetchOutcome(
-            symbol=member.symbol,
-            category=member.category,
-            ok=True,
-            source_ticker=ticker,
-            rows=len(history.bars),
-            first_day=history.first_day,
-            last_day=history.last_day,
-            actions=len(history.actions),
-            warnings=tuple(quality_warnings(history.bars)),
-            segments=segments,
-        )
-        self._repo.save(member, history, outcome)
-        self._progress(
-            f"    OK {outcome.rows} 行 {outcome.first_day} ~ {outcome.last_day}，"
-            f"公司行动 {outcome.actions} 条，质量提示 {len(outcome.warnings)} 条"
-        )
-        return outcome
+        return save_history(self._repo, member, ticker, history, self._progress, segments)
+
+
+def record_failure(
+    repo: RawDataRepository,
+    member: UniverseMember,
+    error: str,
+    progress: ProgressFn,
+    no_data: bool = False,
+) -> FetchOutcome:
+    """记录失败或无数据（不保存任何日线）。fetch-raw 与 fetch-batch 共用。"""
+    outcome = FetchOutcome(member.symbol, member.category, ok=False, error=error, no_data=no_data)
+    repo.record_failure(outcome)
+    progress(f"    {'无数据' if no_data else '失败'}: {error}")
+    return outcome
+
+
+def save_history(
+    repo: RawDataRepository,
+    member: UniverseMember,
+    ticker: str,
+    history: PriceHistory,
+    progress: ProgressFn,
+    segments: tuple[SegmentRecord, ...] = (),
+) -> FetchOutcome:
+    """写盘前最后一道封存检查后保存。fetch-raw 与 fetch-batch 共用。"""
+    assert_sealed(history)
+    outcome = FetchOutcome(
+        symbol=member.symbol,
+        category=member.category,
+        ok=True,
+        source_ticker=ticker,
+        rows=len(history.bars),
+        first_day=history.first_day,
+        last_day=history.last_day,
+        actions=len(history.actions),
+        warnings=tuple(quality_warnings(history.bars)),
+        segments=segments,
+    )
+    repo.save(member, history, outcome)
+    progress(
+        f"    OK {outcome.rows} 行 {outcome.first_day} ~ {outcome.last_day}，"
+        f"公司行动 {outcome.actions} 条，质量提示 {len(outcome.warnings)} 条"
+    )
+    return outcome

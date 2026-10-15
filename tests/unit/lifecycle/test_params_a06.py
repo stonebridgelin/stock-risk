@@ -45,6 +45,8 @@ def test_grid_and_defaults_are_valid() -> None:
         {"k1": math.nan},
         {"k2": math.inf},
         {"u_rel": math.inf},
+        {"u_rel": 0},  # T08d-1 第 4A 节：u_rel > 0
+        {"u_rel": -1},
         {"k1": 0},
         {"k1": 4, "k2": 4},
         {"k1": 5, "k2": 4},

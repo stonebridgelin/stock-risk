@@ -9,6 +9,8 @@
     uv run stock-risk show-ranges                     三个区间与缺价日（output/ranges/）
     uv run stock-risk replay --candidates reference12 12 组参考候选回放与图表（output/replay/）
     uv run stock-risk replay --candidates all         768 组全量汇总（多进程）
+    uv run stock-risk probe-tickers / fetch-batch     选参集数据（见 cli/selection.py，T08d-1）
+    uv run stock-risk audit-raw --dir D --list L      审计其他目录（如 data/raw_selection）
 """
 
 from __future__ import annotations
@@ -16,9 +18,11 @@ from __future__ import annotations
 import argparse
 import sys
 from datetime import date
+from pathlib import Path
 
 from stock_risk.application.market_data_loader import DOWNLOAD_START
 from stock_risk.bootstrap import (
+    build_audit_dir_service,
     build_audit_raw_data_service,
     build_check_calendar_service,
     build_compare_service,
@@ -28,6 +32,8 @@ from stock_risk.bootstrap import (
     build_v0_regression,
 )
 from stock_risk.config.settings import load_settings
+from stock_risk.infrastructure.storage.fetch_batch_files import read_batch_list
+from stock_risk.interfaces.cli import selection
 
 DEFAULT_START = DOWNLOAD_START
 
@@ -43,8 +49,17 @@ def _cmd_fetch_raw(args: argparse.Namespace) -> int:
 
 def _cmd_audit_raw(args: argparse.Namespace) -> int:
     settings = load_settings()
-    service = build_audit_raw_data_service(settings)
-    report, paths = service.run(date.today(), settings.audit_output_dir)
+    if args.dir:
+        if not args.list:
+            print("--dir 需要同时给出 --list（下载清单，作为被审计的代码）")
+            return 2
+        raw_dir = Path(args.dir)
+        service = build_audit_dir_service(settings, raw_dir, read_batch_list(Path(args.list)))
+        out_root = settings.audit_output_dir / raw_dir.name  # 不与 data/raw 的审计输出混放
+    else:
+        service = build_audit_raw_data_service(settings)
+        out_root = settings.audit_output_dir
+    report, paths = service.run(date.today(), out_root)
     print(
         f"审计 {len(report.symbols)} 个代码：明确失败 {report.total_failures} 项，"
         f"封存越界 {report.total_sealed_rows} 行，缺少原始文件 {len(report.missing)} 个。"
@@ -168,7 +183,11 @@ def main(argv: list[str] | None = None) -> int:
     p.set_defaults(func=_cmd_fetch_raw)
 
     a = sub.add_parser("audit-raw", help="审计 data/raw 原始数据（只报告，不修改）")
+    a.add_argument("--dir", default="", help="审计其他目录（如 data/raw_selection），需配 --list")
+    a.add_argument("--list", default="", help="下载清单 CSV（symbol,source_ticker,from,to）")
     a.set_defaults(func=_cmd_audit_raw)
+
+    selection.add_parsers(sub)
 
     c = sub.add_parser("check-calendar", help="用 XNYS 独立日历核对 SPY 日历代理（I13）")
     c.set_defaults(func=_cmd_check_calendar)
@@ -181,7 +200,7 @@ def main(argv: list[str] | None = None) -> int:
     rp.add_argument("--workers", type=int, default=None, help="all 模式的进程数，默认 CPU 数 − 1")
     rp.set_defaults(func=_cmd_replay)
 
-    cp = sub.add_parser("compare", help="T06 对照回放：624 套 × 27 只个股，对照表与时间线")
+    cp = sub.add_parser("compare", help="对照回放：636 套 × 27 只个股，对照表与时间线")
     cp.add_argument("--workers", type=int, default=None, help="进程数，默认 CPU 数 − 1")
     cp.add_argument("--sets", default="", help="调试用：只运行这些套（自动加上基准），逗号分隔")
     cp.add_argument("--symbols", default="", help="调试用：只运行这些个股")

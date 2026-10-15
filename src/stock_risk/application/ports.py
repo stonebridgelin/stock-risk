@@ -22,12 +22,23 @@ class PriceSourceError(RuntimeError):
     """数据源调用失败（网络、鉴权、限频重试耗尽等），区别于“代码不存在”。"""
 
 
+class RateLimitError(PriceSourceError):
+    """限频（429）退避重试仍失败：额度已用尽，应保存进度后退出（T08d-1）。"""
+
+
 class PriceSource(Protocol):
     name: str
 
     def fetch(self, ticker: str, start: date, end: date) -> PriceHistory | None:
         """返回区间内的日线；代码在数据源不存在时返回 None；调用失败抛 PriceSourceError。"""
         ...
+
+
+class CountingPriceSource(PriceSource, Protocol):
+    """记录实际发出的请求数（含重试），供额度记账（fetch-batch）。"""
+
+    @property
+    def request_count(self) -> int: ...
 
 
 class UniverseProvider(Protocol):
@@ -53,6 +64,10 @@ class PriceCorrectionProvider(Protocol):
 class RawDataRepository(Protocol):
     def is_fetched(self, symbol: str) -> bool:
         """该代码是否已成功落盘（用于断点续传）。"""
+        ...
+
+    def state_of(self, symbol: str) -> str | None:
+        """下载状态：ok / no_data / failed；没有记录时为 None。"""
         ...
 
     def save(

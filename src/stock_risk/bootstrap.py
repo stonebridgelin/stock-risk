@@ -2,16 +2,23 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+from datetime import UTC, datetime
+from pathlib import Path
+
 from stock_risk.application.audit_raw_data import AuditRawDataService
 from stock_risk.application.check_calendar import CheckCalendarService
 from stock_risk.application.compare.service import CompareService
+from stock_risk.application.fetch_batch import BatchItem, FetchBatchService, QuotaLimits
 from stock_risk.application.fetch_raw_data import FetchRawDataService
 from stock_risk.application.market_data_loader import MarketDataLoader
+from stock_risk.application.probe_tickers import ProbeTickersService
 from stock_risk.application.progress import ProgressFn, quiet
 from stock_risk.application.replay import ReplayService
 from stock_risk.application.replay_run import ReplayRunService
 from stock_risk.application.show_ranges import ShowRangesService
 from stock_risk.config.settings import Settings
+from stock_risk.domain.universe import UniverseMember
 from stock_risk.infrastructure.calendars.xnys import ExchangeCalendarsXnys
 from stock_risk.infrastructure.replay.compare_files import CompareFileSink
 from stock_risk.infrastructure.replay.environment import LocalRunEnvironment
@@ -25,11 +32,14 @@ from stock_risk.infrastructure.storage.csv_config_providers import (
 from stock_risk.infrastructure.storage.csv_raw_reader import CsvRawDataReader
 from stock_risk.infrastructure.storage.csv_raw_repository import CsvRawDataRepository
 from stock_risk.infrastructure.storage.csv_universe_provider import CsvUniverseProvider
+from stock_risk.infrastructure.storage.fetch_batch_files import JsonQuotaStore
 from stock_risk.infrastructure.storage.ranges_calendar_writers import (
     CalendarCheckFileWriter,
     RangesFileWriter,
 )
+from stock_risk.infrastructure.storage.universe_probe_files import ProbeFileWriter
 from stock_risk.infrastructure.tiingo.client import TiingoPriceSource
+from stock_risk.infrastructure.tiingo.ticker_list import TiingoTickerList
 
 
 def build_fetch_raw_data_service(
@@ -52,6 +62,77 @@ def build_audit_raw_data_service(settings: Settings) -> AuditRawDataService:
         universe=CsvUniverseProvider(settings.exploration_universe_file),
         segments=CsvSegmentProvider(settings.symbol_segments_file),
         writer=AuditReportFileWriter(),
+    )
+
+
+def build_probe_tickers_service() -> ProbeTickersService:
+    """代码清单探查（T08d-1）：公开清单，不用密钥，不下载价格。"""
+    return ProbeTickersService(source=TiingoTickerList(), writer=ProbeFileWriter())
+
+
+def quota_limits(
+    settings: Settings,
+    per_hour: int | None = None,
+    per_day: int | None = None,
+    unique_per_month: int | None = None,
+    max_symbols: int | None = None,
+) -> QuotaLimits:
+    """额度：命令行 > .env / 环境变量 > 默认（免费档）。"""
+    d = QuotaLimits()
+    return QuotaLimits(
+        per_hour=per_hour or settings.tiingo_per_hour or d.per_hour,
+        per_day=per_day or settings.tiingo_per_day or d.per_day,
+        unique_per_month=unique_per_month or settings.tiingo_unique_per_month or d.unique_per_month,
+        max_symbols=max_symbols,
+    )
+
+
+def build_fetch_batch_service(
+    settings: Settings, out_dir: Path, limits: QuotaLimits, progress: ProgressFn = quiet
+) -> FetchBatchService:
+    if not settings.tiingo_api_key:
+        raise SystemExit("未配置 TIINGO_API_KEY（项目根目录 .env 或环境变量）")
+    source = TiingoPriceSource(
+        settings.tiingo_api_key.reveal(), min_interval_sec=3600 / limits.per_hour
+    )
+    return FetchBatchService(
+        source=source,
+        repository=CsvRawDataRepository(out_dir, title="stock-risk 选参集原始行情"),
+        quota=JsonQuotaStore(out_dir),
+        now=lambda: datetime.now(UTC),
+        progress=progress,
+    )
+
+
+class _StaticUniverse:
+    def __init__(self, members: Sequence[UniverseMember]) -> None:
+        self._members = tuple(members)
+
+    def load(self) -> tuple[UniverseMember, ...]:
+        return self._members
+
+
+class _NoConfig:
+    def load(self) -> dict:
+        return {}
+
+
+def build_audit_dir_service(
+    settings: Settings, raw_dir: Path, items: Sequence[BatchItem]
+) -> AuditRawDataService:
+    """审计其他目录（如 data/raw_selection）：代码取自下载清单；日历代理仍用 data/raw 的 SPY；
+    上市期间沿用配置，不应用探索集的更正与分段。"""
+    loader = MarketDataLoader(
+        reader=CsvRawDataReader(raw_dir),
+        listings=CsvListingPeriodProvider(settings.listing_periods_file),
+        corrections=_NoConfig(),
+    )
+    return AuditRawDataService(
+        loader=loader,
+        universe=_StaticUniverse([i.member() for i in items]),
+        segments=_NoConfig(),
+        writer=AuditReportFileWriter(),
+        calendar_reader=CsvRawDataReader(settings.raw_data_dir),
     )
 
 

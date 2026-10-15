@@ -56,6 +56,8 @@ def _jsonable(outcome: FetchOutcome) -> dict[str, Any]:
             d[k] = d[k].isoformat()
     d["warnings"] = list(d["warnings"])
     d.pop("skipped", None)
+    if d.pop("no_data", False):  # 只在无数据时记录，原有状态格式不变
+        d["state"] = "no_data"
     for seg in d["segments"]:
         for k in ("first_day", "last_day"):
             if isinstance(seg[k], date):
@@ -76,8 +78,9 @@ def _segments_text(r: dict[str, Any]) -> str:
 
 
 class CsvRawDataRepository:
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, title: str = "stock-risk 探索期原始行情") -> None:
         self._root = root
+        self._title = title
         self._root.mkdir(parents=True, exist_ok=True)
         self._status_path = root / STATUS_FILE
         self._status: dict[str, dict[str, Any]] = (
@@ -87,6 +90,14 @@ class CsvRawDataRepository:
     # ---- RawDataRepository ----
     def is_fetched(self, symbol: str) -> bool:
         return bool(self._status.get(symbol, {}).get("ok")) and self._bar_path(symbol).exists()
+
+    def state_of(self, symbol: str) -> str | None:
+        r = self._status.get(symbol)
+        if r is None:
+            return None
+        if r.get("ok"):
+            return "ok" if self._bar_path(symbol).exists() else None
+        return r.get("state", "failed")
 
     def save(self, member: UniverseMember, history: PriceHistory, outcome: FetchOutcome) -> None:
         _write_csv(
@@ -158,7 +169,7 @@ class CsvRawDataRepository:
     ) -> None:
         now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
         lines = [
-            "stock-risk 探索期原始行情",
+            self._title,
             f"来源: {report.source_name} EOD API",
             f"最近一次运行: {now}",
             f"范围: {report.start} ~ {report.end}"

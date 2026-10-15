@@ -30,6 +30,11 @@ class FetchOutcome:
     error: str | None = None
     skipped: bool = False
     segments: tuple[SegmentRecord, ...] = ()
+    no_data: bool = False  # 数据源没有该代码（404 / not found），不是调用失败（T08d-1）
+
+    @property
+    def state(self) -> str:
+        return "ok" if self.ok else ("no_data" if self.no_data else "failed")
 
 
 @dataclass(slots=True)

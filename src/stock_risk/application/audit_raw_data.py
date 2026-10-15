@@ -17,6 +17,7 @@ from stock_risk.application.market_data_loader import (
 )
 from stock_risk.application.ports import (
     AuditReportWriter,
+    RawDataReader,
     SegmentProvider,
     UniverseProvider,
 )
@@ -73,7 +74,11 @@ class AuditRawDataService:
         universe: UniverseProvider,
         segments: SegmentProvider,
         writer: AuditReportWriter,
+        calendar_reader: RawDataReader | None = None,
     ) -> None:
+        """calendar_reader：日历代理 SPY 所在目录的读取器；审计其他目录（如 data/raw_selection，
+        T08d-1）时由组装入口给出 data/raw 的读取器，默认与被审计目录相同。"""
+        self._calendar_reader = calendar_reader
         self._loader = loader
         self._universe = universe
         self._segments = segments
@@ -82,9 +87,10 @@ class AuditRawDataService:
     def run(self, run_date: date, out_root: Path) -> tuple[AuditReport, list[Path]]:
         """run_date 由调用方注入（domain 与 application 不读时钟）；输出到 out_root/<run_date>/。"""
         reader = self._loader.reader
-        if not reader.exists(CALENDAR_SYMBOL):
+        cal_reader = self._calendar_reader or reader
+        if not cal_reader.exists(CALENDAR_SYMBOL):
             raise FileNotFoundError(f"缺少日历代理 {CALENDAR_SYMBOL} 的原始数据")
-        calendar = tuple(b.day for b in reader.load(CALENDAR_SYMBOL).history.bars)
+        calendar = tuple(b.day for b in cal_reader.load(CALENDAR_SYMBOL).history.bars)
         segment_map = self._segments.load()
         members = list(self._universe.load())
         unknown = set(self._loader.corrections) - {m.symbol for m in members}
