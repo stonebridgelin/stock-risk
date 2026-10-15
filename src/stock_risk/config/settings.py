@@ -80,6 +80,13 @@ class Settings:
     tiingo_per_hour: int | None = None
     tiingo_per_day: int | None = None
     tiingo_unique_per_month: int | None = None
+    # Massive 试验（T08d-2a）：密钥 MASSIVE_API_KEY；限频 MASSIVE_PER_MINUTE（未设置时为免费档 5）
+    massive_api_key: Secret = field(default_factory=lambda: Secret(""), repr=False)
+    massive_per_minute: int | None = None
+
+    @property
+    def massive_probe_dir(self) -> Path:
+        return self.project_root / "data" / "massive_probe"
 
     @property
     def raw_data_dir(self) -> Path:
@@ -149,4 +156,6 @@ def load_settings(project_root: Path = PROJECT_ROOT) -> Settings:
         tiingo_per_hour=get_int("TIINGO_PER_HOUR"),
         tiingo_per_day=get_int("TIINGO_PER_DAY"),
         tiingo_unique_per_month=get_int("TIINGO_UNIQUE_PER_MONTH"),
+        massive_api_key=Secret(get("MASSIVE_API_KEY")),
+        massive_per_minute=get_int("MASSIVE_PER_MINUTE"),
     )

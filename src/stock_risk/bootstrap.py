@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
@@ -12,6 +13,7 @@ from stock_risk.application.compare.service import CompareService
 from stock_risk.application.fetch_batch import BatchItem, FetchBatchService, QuotaLimits
 from stock_risk.application.fetch_raw_data import FetchRawDataService
 from stock_risk.application.market_data_loader import MarketDataLoader
+from stock_risk.application.probe_massive import ProbeMassiveService
 from stock_risk.application.probe_tickers import ProbeTickersService
 from stock_risk.application.progress import ProgressFn, quiet
 from stock_risk.application.replay import ReplayService
@@ -21,6 +23,7 @@ from stock_risk.config.settings import Settings
 from stock_risk.domain.universe import UniverseMember
 from stock_risk.domain.universe_probe import CoverageRequest
 from stock_risk.infrastructure.calendars.xnys import ExchangeCalendarsXnys
+from stock_risk.infrastructure.massive.client import MassiveReference
 from stock_risk.infrastructure.replay.compare_files import CompareFileSink
 from stock_risk.infrastructure.replay.environment import LocalRunEnvironment
 from stock_risk.infrastructure.replay.files import ReplayFileSink
@@ -37,6 +40,7 @@ from stock_risk.infrastructure.storage.csv_raw_repository import (
 )
 from stock_risk.infrastructure.storage.csv_universe_provider import CsvUniverseProvider
 from stock_risk.infrastructure.storage.fetch_batch_files import JsonQuotaStore, read_batch_list
+from stock_risk.infrastructure.storage.massive_probe_files import MassiveProbeFiles
 from stock_risk.infrastructure.storage.ranges_calendar_writers import (
     CalendarCheckFileWriter,
     RangesFileWriter,
@@ -75,6 +79,24 @@ def build_audit_raw_data_service(settings: Settings) -> AuditRawDataService:
 def build_probe_tickers_service() -> ProbeTickersService:
     """代码清单探查（T08d-1）：公开清单，不用密钥，不下载价格。"""
     return ProbeTickersService(source=TiingoTickerList(), writer=ProbeFileWriter())
+
+
+def build_probe_massive_service(
+    settings: Settings,
+    out_dir: Path,
+    per_minute: int | None = None,
+    progress: ProgressFn = quiet,
+) -> ProbeMassiveService:
+    """Massive 数据源试验（T08d-2a）：只读参考数据，不下载价格。限频：命令行 > .env > 5 次/分钟。"""
+    if not settings.massive_api_key:
+        raise SystemExit("未配置 MASSIVE_API_KEY（项目根目录 .env 或环境变量）")
+    rate = per_minute or settings.massive_per_minute or 5
+    return ProbeMassiveService(
+        source=MassiveReference(settings.massive_api_key.reveal(), per_minute=rate),
+        store=MassiveProbeFiles(out_dir),
+        clock=time.monotonic,
+        progress=progress,
+    )
 
 
 def load_batch_list(path: Path) -> list[BatchItem]:

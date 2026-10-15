@@ -26,6 +26,16 @@ class RateLimitError(PriceSourceError):
     """限频（429）退避重试仍失败：额度已用尽，应保存进度后退出（T08d-1）。"""
 
 
+class QueryRejected(PriceSourceError):
+    """数据源拒绝了这次查询（例如免费档不支持历史日期）。记录 HTTP 状态与去掉密钥的原文，
+    不算失败，继续下一项（T08d-2a 第 2.1 节）。"""
+
+    def __init__(self, http_status: int, message: str) -> None:
+        super().__init__(f"HTTP {http_status}: {message}")
+        self.http_status = http_status
+        self.message = message
+
+
 class PriceSource(Protocol):
     name: str
 

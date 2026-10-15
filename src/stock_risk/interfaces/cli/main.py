@@ -10,6 +10,7 @@
     uv run stock-risk replay --candidates reference12 12 组参考候选回放与图表（output/replay/）
     uv run stock-risk replay --candidates all         768 组全量汇总（多进程）
     uv run stock-risk probe-tickers / fetch-batch     选参集数据（见 cli/selection.py，T08d-1）
+    uv run stock-risk probe-massive                   Massive 试验（见 cli/massive.py，T08d-2a）
     uv run stock-risk audit-raw --dir D --list L      审计其他目录（如 data/raw_selection）
 """
 
@@ -33,7 +34,7 @@ from stock_risk.bootstrap import (
     load_batch_list,
 )
 from stock_risk.config.settings import load_settings
-from stock_risk.interfaces.cli import selection
+from stock_risk.interfaces.cli import massive, selection
 
 DEFAULT_START = DOWNLOAD_START
 
@@ -188,6 +189,7 @@ def main(argv: list[str] | None = None) -> int:
     a.set_defaults(func=_cmd_audit_raw)
 
     selection.add_parsers(sub)
+    massive.add_parsers(sub)
 
     c = sub.add_parser("check-calendar", help="用 XNYS 独立日历核对 SPY 日历代理（I13）")
     c.set_defaults(func=_cmd_check_calendar)
