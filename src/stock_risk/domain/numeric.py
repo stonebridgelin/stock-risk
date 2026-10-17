@@ -11,7 +11,15 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from decimal import ROUND_HALF_EVEN, Decimal, InvalidOperation
+from decimal import (
+    ROUND_HALF_EVEN,
+    Context,
+    Decimal,
+    DivisionByZero,
+    InvalidOperation,
+    Overflow,
+    localcontext,
+)
 from enum import StrEnum
 
 
@@ -20,6 +28,18 @@ class InvalidInputError(ValueError):
 
 
 PRICE_QUANTUM = Decimal("0.000001")  # 六位小数（v0.4 第 2.0 节"入库量化"）
+# 价格量化与数值解析的固定上下文（T09-E1R R3）：完整给出全部配置，不继承调用方的当前上下文。
+# Emin、Emax 取 Python 默认上下文的值（±999999），默认环境下的结果逐位不变。
+PARSE_CONTEXT = Context(
+    prec=28,
+    rounding=ROUND_HALF_EVEN,
+    Emin=-999999,
+    Emax=999999,
+    capitals=1,
+    clamp=0,
+    flags=[],
+    traps=[InvalidOperation, DivisionByZero, Overflow],
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,6 +62,7 @@ class Kind(StrEnum):
 
 
 def _decimal(text: str, field: str) -> Decimal:
+    """在 PARSE_CONTEXT 中解析（由调用方进入）。"""
     try:
         value = Decimal(text.strip())
     except (InvalidOperation, AttributeError) as e:
@@ -57,15 +78,23 @@ def quantize_price(text: str, field: str = "price") -> float:
     非有限值 → InvalidInputError；量化后 ≤ 0 → InvalidInputError（v0.4 第 2.0 节按量化后的值判定，
     例如 "0.0000004" 量化为 0，属于非法值）。
     """
-    value = _decimal(text, field).quantize(PRICE_QUANTUM, rounding=ROUND_HALF_EVEN)
-    if value <= 0:
-        raise InvalidInputError(f"{field} 量化后不是正数: {text!r}")
-    return float(value)
+    with localcontext(PARSE_CONTEXT):
+        try:
+            value = _decimal(text, field).quantize(PRICE_QUANTUM, rounding=ROUND_HALF_EVEN)
+        except InvalidOperation as e:  # 例如超出精度（"1e30" 量化到六位需要 37 位有效数字）
+            raise InvalidInputError(f"{field} 无法量化到六位小数: {text!r}") from e
+        if value <= 0:
+            raise InvalidInputError(f"{field} 量化后不是正数: {text!r}")
+        return float(value)
 
 
 def parse_finite(text: str, field: str) -> float:
-    """非价格数值（成交量、公司行动数值）：只要求有限，不量化。"""
-    return float(_decimal(text, field))
+    """非价格数值（成交量、公司行动数值）：只要求有限，不量化；转成 float 后也须有限。"""
+    with localcontext(PARSE_CONTEXT):
+        value = float(_decimal(text, field))
+    if not math.isfinite(value):
+        raise InvalidInputError(f"{field} 转换为浮点数后不是有限值: {text!r}")
+    return value
 
 
 def _eps(kind: Kind, tol: Tolerances) -> float:
