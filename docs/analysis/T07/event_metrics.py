@@ -1,6 +1,7 @@
 """T07：在示意事件集（T05 的 events_pct20.csv，190 个）上，计算对照回放各套的覆盖、新通知、谷底在场与解除指标。
 
-产品经理分析用，非产品代码（I23）。读取对照正式运行 20261014T064853-5de21a7；收盘价取自 T04b 正式运行的 V0 daily.csv。
+产品经理分析用，非产品代码（I23）。读取对照正式运行（默认 T08a 的 20261014T200012-0e0d45e，可用第一个参数指定 run_id）；收盘价取自 T04b 正式运行的 V0 daily.csv。
+全部套数都计算（含 N14，C-04）；旧版只算 N20。
 用法：仓库根目录先运行 docs/analysis/T05/events_pct.py，再运行本脚本；结果写到 output/t07/。
 口径与 docs/analysis/T05/coverage.py 相同（新通知 = [峰值日, 谷底日) 内第一个 START 或升为警戒的 ESCALATE）。
 """
@@ -9,7 +10,8 @@ from pathlib import Path
 from multiprocessing import Pool
 import pandas as pd
 ROOT = Path(__file__).resolve().parents[3]
-CMP = ROOT / 'output/compare/20261014T064853-5de21a7'
+RUN = sys.argv[1] if len(sys.argv) > 1 else '20261014T200012-0e0d45e'
+CMP = ROOT / 'output/compare' / RUN
 T04 = ROOT / 'output/replay/20261014T015654-dc5b14c'
 OUT = ROOT / 'output/t07'
 EV = pd.read_csv(ROOT / 'output/t05/events_pct20.csv')
@@ -67,7 +69,6 @@ if __name__ == '__main__':
     OUT.mkdir(parents=True, exist_ok=True)
     m = json.load(open(CMP / 'run_manifest.json'))
     sets = [s['set_id'] if isinstance(s, dict) else s for s in m['variant_sets']]
-    sets = [s for s in sets if '_N20_' in s]
     with Pool(6, initializer=init) as p:
         res = p.map(one, sets, chunksize=4)
     df = pd.DataFrame([r for rs in res for r in rs])
