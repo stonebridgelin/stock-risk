@@ -71,9 +71,11 @@ def test_B21m_missing_censor_h1_unknown() -> None:
         for caliber in Caliber:
             o = classify(series, method, chain.events[0], caliber)
             assert o.outcome_class is OutcomeClass.EXCLUDED
-            # 原因取自事件本身；B21m 事件的截尾字段见回执停止项
-            # （夹具未随 E1R R2 更新），这里不依赖它
-            assert {"RIGHT_DATA_END", "UNEVALUABLE_MISSING"} <= o.reasons
+            assert o.reasons == {"MISSING", "RIGHT_DATA_END", "UNEVALUABLE_MISSING"}
+    # 事件的截尾与不可评估逐项比较夹具（v1.2，T09-E2M 补正 E2-01）
+    expected = case["expected_events"][0]
+    assert chain.events[0].censor == frozenset(expected["censor"])
+    assert chain.events[0].unevaluable == frozenset(expected["unevaluable"])
 
 
 def test_B15_s2_restart_truncated_and_supplemented() -> None:
