@@ -2,6 +2,7 @@
 
 uv run stock-risk probe-massive [--out data/massive_probe] [--per-minute 5]
 uv run stock-risk probe-massive --followup [--out data/massive_probe/followup] [--per-minute 5]
+uv run stock-risk probe-massive-paid [--out data/massive_probe/paid] [--per-minute 100]
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ from typing import Any
 
 from stock_risk.bootstrap import (
     build_probe_massive_followup_service,
+    build_probe_massive_paid_service,
     build_probe_massive_service,
 )
 from stock_risk.config.settings import load_settings
@@ -76,6 +78,37 @@ def _cmd_followup(args: argparse.Namespace) -> int:
     return 1 if r.rate_limited else 0
 
 
+def _cmd_probe_massive_paid(args: argparse.Namespace) -> int:
+    settings = load_settings()
+    out = Path(args.out) if args.out else settings.massive_paid_dir
+    service = build_probe_massive_paid_service(settings, out, args.per_minute, progress=print)
+    try:
+        r = service.run()
+    except KeyboardInterrupt:
+        print("\n已中断：已完成的项已保存进度；再次运行会跳过已完成项。")
+        return 130
+    s = r.summary
+    prices = _count(v["status"] for p in s["prices"].values() for v in (p["raw"], p["adj"]))
+    actions = _count(v["status"] for v in s["actions"].values())
+    lists = _count(v["status"] for v in s["labels"]["lists"].values())
+    print(f"\n日线 {prices}；拆股与分红 {actions}；清单 {lists}")
+    print(f"封存：{s['seal']}")
+    print(
+        f"本次请求 {r.requests_now} 次；累计请求 {s['requests_total']} 次，"
+        f"累计耗时 {s['elapsed_seconds_total']} 秒"
+    )
+    if r.stopped:
+        print(f"停止原因：{r.stopped}（进度已保存）")
+    if s["plan_rejected"]:
+        rej = s["plan_rejected"]
+        print(f"付费档拒绝历史价格：HTTP {rej.get('http_status')} {rej.get('message')}")
+    if r.remaining:
+        print(f"尚未完成 {len(r.remaining)} 项")
+    for p in r.paths:
+        print(f"  {p}")
+    return 1 if r.stopped else 0
+
+
 def _count(values: Any) -> dict[str, int]:
     out: dict[str, int] = {}
     for v in values:
@@ -96,3 +129,12 @@ def add_parsers(sub: Any) -> None:
         "默认输出 data/massive_probe/followup/",
     )
     p.set_defaults(func=_cmd_probe_massive)
+    q = sub.add_parser(
+        "probe-massive-paid",
+        help="Massive 付费档验证：日线、拆股分红、无标签证券分类（不全量下载；T08d-2b）",
+    )
+    q.add_argument("--out", default="", help="输出目录，默认 data/massive_probe/paid/")
+    q.add_argument(
+        "--per-minute", type=int, default=None, help="每分钟请求上限，默认 100（付费档）"
+    )
+    q.set_defaults(func=_cmd_probe_massive_paid)

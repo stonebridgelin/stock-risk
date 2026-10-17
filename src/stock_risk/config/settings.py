@@ -83,10 +83,18 @@ class Settings:
     # Massive 试验（T08d-2a）：密钥 MASSIVE_API_KEY；限频 MASSIVE_PER_MINUTE（未设置时为免费档 5）
     massive_api_key: Secret = field(default_factory=lambda: Secret(""), repr=False)
     massive_per_minute: int | None = None
+    # Massive 付费档（T08d-2b 第 0.2 节）：密钥 MASSIVE_ADVANCED_API_KEY；
+    # 付费档命令只用此项，不回退到免费档密钥
+    massive_advanced_api_key: Secret = field(default_factory=lambda: Secret(""), repr=False)
 
     @property
     def massive_probe_dir(self) -> Path:
         return self.project_root / "data" / "massive_probe"
+
+    @property
+    def massive_paid_dir(self) -> Path:
+        """付费档验证（T08d-2b）的输出目录。"""
+        return self.massive_probe_dir / "paid"
 
     @property
     def raw_data_dir(self) -> Path:
@@ -158,4 +166,5 @@ def load_settings(project_root: Path = PROJECT_ROOT) -> Settings:
         tiingo_unique_per_month=get_int("TIINGO_UNIQUE_PER_MONTH"),
         massive_api_key=Secret(get("MASSIVE_API_KEY")),
         massive_per_minute=get_int("MASSIVE_PER_MINUTE"),
+        massive_advanced_api_key=Secret(get("MASSIVE_ADVANCED_API_KEY")),
     )

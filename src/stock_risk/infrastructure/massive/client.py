@@ -8,7 +8,10 @@
 - 限频：默认每分钟 5 次（免费档），两次请求最小间隔 60 / 上限 秒；遇 429 退避（60 秒 × 次数），
   连续 3 次 429 抛 RateLimitError；
 - 封存：请求参数 date 不得晚于 2019-12-31（domain.massive_probe.check_query_date）；
-- 查询的 exchange、type、market 为 None 时请求中不传该参数（第 2.4 节）。
+- 查询的 exchange、type、market 为 None 时请求中不传该参数（第 2.4 节）；
+- 付费档（T08d-2b）：日线 Aggregates、拆股 /stocks/v1/splits、分红 /stocks/v1/dividends；
+  日线的 to 不得晚于 2019-12-31（domain.massive_paid.check_price_range）。
+  适配器不读配置：用哪个密钥由 bootstrap 决定。
 只用标准库 urllib；原始响应只在内存中解析后返回，不写盘。
 """
 
@@ -25,6 +28,7 @@ from typing import Any
 
 from stock_risk.application.ports import PriceSourceError, QueryRejected, RateLimitError
 from stock_risk.domain.massive_followup import TickerPages
+from stock_risk.domain.massive_paid import check_price_range
 from stock_risk.domain.massive_probe import ListQuery, check_query_date
 
 HOST = "api.massive.com"
@@ -94,7 +98,55 @@ class MassiveReference:
             "sort": "ticker",
         }
         qs = urllib.parse.urlencode({k: v for k, v in params.items() if v is not None})
-        url: str | None = f"{BASE_URL}/v3/reference/tickers?{qs}"
+        got = self._paginate(f"{BASE_URL}/v3/reference/tickers?{qs}", max_pages, "All Tickers")
+        if got is None:
+            raise QueryRejected(404, "not found")
+        return got
+
+    # ---- 付费档（T08d-2b）：日线、拆股、分红 ----
+
+    def aggs(self, ticker: str, start: date, end: date, adjusted: bool) -> TickerPages | None:
+        """日线 /v2/aggs/ticker/{ticker}/range/1/day/{from}/{to}；to 不得晚于 2019-12-31。
+        查不到（404）时返回 None。原始行只在内存中返回，由调用方做封存处理。"""
+        check_price_range(start, end)
+        path = (
+            f"/v2/aggs/ticker/{urllib.parse.quote(ticker, safe='')}/range/1/day/"
+            f"{start.isoformat()}/{end.isoformat()}"
+        )
+        params = {"adjusted": "true" if adjusted else "false", "sort": "asc", "limit": "50000"}
+        url = f"{BASE_URL}{path}?{urllib.parse.urlencode(params)}"
+        return self._paginate(url, MAX_PAGES, "Aggregates")
+
+    def splits(self, ticker: str, until: date) -> TickerPages:
+        """拆股 /stocks/v1/splits：ticker、execution_date.lte（不晚于 2019-12-31）。"""
+        check_query_date(until)
+        params = {
+            "ticker": ticker,
+            "execution_date.lte": until.isoformat(),
+            "limit": "5000",
+            "sort": "execution_date.asc",
+        }
+        return self._reference("/stocks/v1/splits", params, "Splits")
+
+    def dividends(self, ticker: str, until: date) -> TickerPages:
+        """分红 /stocks/v1/dividends：ticker、ex_dividend_date.lte（不晚于 2019-12-31）。"""
+        check_query_date(until)
+        params = {
+            "ticker": ticker,
+            "ex_dividend_date.lte": until.isoformat(),
+            "limit": "5000",
+            "sort": "ex_dividend_date.asc",
+        }
+        return self._reference("/stocks/v1/dividends", params, "Dividends")
+
+    def _reference(self, path: str, params: dict[str, str], what: str) -> TickerPages:
+        got = self._paginate(f"{BASE_URL}{path}?{urllib.parse.urlencode(params)}", MAX_PAGES, what)
+        if got is None:
+            raise QueryRejected(404, "not found")
+        return got
+
+    def _paginate(self, url: str | None, max_pages: int, what: str) -> TickerPages | None:
+        """翻页至多 max_pages 页；首页 404 返回 None。达到上限时仍有下一页则 complete 为假。"""
         out: list[dict[str, Any]] = []
         pages = 0
         while url is not None:
@@ -102,10 +154,12 @@ class MassiveReference:
                 return TickerPages(out, pages, complete=False)
             data = self._get(url)
             if data is None:
+                if pages == 0:
+                    return None
                 raise QueryRejected(404, "not found")
             results = data.get("results") or []
             if not isinstance(results, list):
-                raise PriceSourceError("All Tickers 返回格式异常（results 不是列表）")
+                raise PriceSourceError(f"{what} 返回格式异常（results 不是列表）")
             out.extend(r for r in results if isinstance(r, dict))
             pages += 1
             url = self._next(data.get("next_url"))

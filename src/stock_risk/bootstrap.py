@@ -15,12 +15,14 @@ from stock_risk.application.fetch_raw_data import FetchRawDataService
 from stock_risk.application.market_data_loader import MarketDataLoader
 from stock_risk.application.probe_massive import ProbeMassiveService
 from stock_risk.application.probe_massive_followup import ProbeMassiveFollowupService
+from stock_risk.application.probe_massive_paid import ProbeMassivePaidService
 from stock_risk.application.probe_tickers import ProbeTickersService
 from stock_risk.application.progress import ProgressFn, quiet
 from stock_risk.application.replay import ReplayService
 from stock_risk.application.replay_run import ReplayRunService
 from stock_risk.application.show_ranges import ShowRangesService
 from stock_risk.config.settings import Settings
+from stock_risk.domain.massive_paid import COMPARE_TICKERS
 from stock_risk.domain.universe import UniverseMember
 from stock_risk.domain.universe_probe import CoverageRequest
 from stock_risk.infrastructure.calendars.xnys import ExchangeCalendarsXnys
@@ -44,6 +46,12 @@ from stock_risk.infrastructure.storage.fetch_batch_files import JsonQuotaStore, 
 from stock_risk.infrastructure.storage.massive_followup_files import (
     MassiveFollowupFiles,
     read_reference_spans,
+)
+from stock_risk.infrastructure.storage.massive_paid_files import (
+    MassivePaidFiles,
+    read_calendar,
+    read_tiingo_actions,
+    read_tiingo_prices,
 )
 from stock_risk.infrastructure.storage.massive_probe_files import MassiveProbeFiles
 from stock_risk.infrastructure.storage.ranges_calendar_writers import (
@@ -86,6 +94,21 @@ def build_probe_tickers_service() -> ProbeTickersService:
     return ProbeTickersService(source=TiingoTickerList(), writer=ProbeFileWriter())
 
 
+def massive_free_key(settings: Settings) -> str:
+    """免费档命令（T08d-2a）的密钥：只用 MASSIVE_API_KEY。"""
+    if not settings.massive_api_key:
+        raise SystemExit("未配置 MASSIVE_API_KEY（项目根目录 .env 或环境变量）")
+    return settings.massive_api_key.reveal()
+
+
+def massive_paid_key(settings: Settings) -> str:
+    """付费档命令（T08d-2b 起）的密钥：只用 MASSIVE_ADVANCED_API_KEY，不回退到 MASSIVE_API_KEY。"""
+    key = settings.massive_advanced_api_key.reveal()
+    if not key.strip():  # 未设置、空串、只有空白字符都视为没有密钥（T08d-2b 第 0.2a 节）
+        raise SystemExit("未配置 MASSIVE_ADVANCED_API_KEY（项目根目录 .env 或环境变量）")
+    return key
+
+
 def build_probe_massive_service(
     settings: Settings,
     out_dir: Path,
@@ -93,11 +116,10 @@ def build_probe_massive_service(
     progress: ProgressFn = quiet,
 ) -> ProbeMassiveService:
     """Massive 数据源试验（T08d-2a）：只读参考数据，不下载价格。限频：命令行 > .env > 5 次/分钟。"""
-    if not settings.massive_api_key:
-        raise SystemExit("未配置 MASSIVE_API_KEY（项目根目录 .env 或环境变量）")
+    key = massive_free_key(settings)
     rate = per_minute or settings.massive_per_minute or 5
     return ProbeMassiveService(
-        source=MassiveReference(settings.massive_api_key.reveal(), per_minute=rate),
+        source=MassiveReference(key, per_minute=rate),
         store=MassiveProbeFiles(out_dir),
         clock=time.monotonic,
         progress=progress,
@@ -111,14 +133,13 @@ def build_probe_massive_followup_service(
     progress: ProgressFn = quiet,
 ) -> ProbeMassiveFollowupService:
     """Massive 追加探查（T08d-2a 第 2.4 节）。D 读取 T08d-1 的 Tiingo 探查输出，不发请求。"""
-    if not settings.massive_api_key:
-        raise SystemExit("未配置 MASSIVE_API_KEY（项目根目录 .env 或环境变量）")
+    key = massive_free_key(settings)
     tiingo = settings.universe_probe_dir / "tickers_2008_2019.csv"
     if not tiingo.exists():
         raise SystemExit(f"缺少 T08d-1 的 Tiingo 探查输出：{tiingo}（先运行 probe-tickers）")
     rate = per_minute or settings.massive_per_minute or 5
     return ProbeMassiveFollowupService(
-        source=MassiveReference(settings.massive_api_key.reveal(), per_minute=rate),
+        source=MassiveReference(key, per_minute=rate),
         store=MassiveFollowupFiles(out_dir),
         tiingo=read_reference_spans(tiingo),
         clock=time.monotonic,
@@ -255,5 +276,32 @@ def build_compare_service(settings: Settings, progress: ProgressFn = quiet) -> C
         replay=build_replay_service(settings),
         sink=CompareFileSink(settings.compare_output_dir),
         env=LocalRunEnvironment(settings.project_root),
+        progress=progress,
+    )
+
+
+def build_probe_massive_paid_service(
+    settings: Settings,
+    out_dir: Path,
+    per_minute: int | None = None,
+    progress: ProgressFn = quiet,
+) -> ProbeMassivePaidService:
+    """Massive 付费档验证（T08d-2b）。
+
+    密钥只用 MASSIVE_ADVANCED_API_KEY；限频：命令行 > .env > 100 次/分钟。
+    """
+    key = massive_paid_key(settings)
+    spy = settings.raw_data_dir / "SPY.csv"
+    if not spy.exists():
+        raise SystemExit(f"缺少交易日历：{spy}")
+    rate = per_minute or settings.massive_per_minute or 100
+    tickers = list(COMPARE_TICKERS)
+    return ProbeMassivePaidService(
+        source=MassiveReference(key, per_minute=rate),
+        store=MassivePaidFiles(out_dir),
+        calendar=read_calendar(spy),
+        tiingo_prices=read_tiingo_prices(settings.selection_raw_dir, tickers),
+        tiingo_actions=read_tiingo_actions(settings.selection_raw_dir, tickers),
+        clock=time.monotonic,
         progress=progress,
     )
