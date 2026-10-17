@@ -49,3 +49,10 @@ def test_caller_emax_and_traps_do_not_matter(ctx: Context) -> None:
         assert q12(Decimal("0.1234567890125")) == default_q
         with pytest.raises(InvalidInputError):
             quantize_price("1e30")
+
+
+def test_no_double_rounding_regression_G_R1() -> None:
+    """T09-E2 开工补充第 1 节第 4 条（Gemini G-R1）：文本精确解析后直接量化，不先按 28 位舍入。"""
+    assert quantize_price("1.23456650000000000000000000001") == 1.234567
+    with localcontext(Context(prec=8)):
+        assert quantize_price("1.23456650000000000000000000001") == 1.234567
