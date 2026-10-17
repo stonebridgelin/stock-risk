@@ -231,10 +231,11 @@ def compare_prices(bars: Sequence[Bar], ref: Sequence[ReferenceBar]) -> dict[str
 
 @dataclass(frozen=True, slots=True)
 class Split:
+    """拆股一行（旧路径 /v3/reference/splits 的字段：execution_date、split_from、split_to）。"""
+
     day: date  # execution_date
     split_from: float
     split_to: float
-    adjustment_type: str | None
 
     def __post_init__(self) -> None:
         assert_dates_not_sealed("Massive 拆股", self.day)
@@ -250,10 +251,7 @@ def seal_split(raw: Mapping[str, Any]) -> Split | None:
     d = _day(raw.get("execution_date"))
     if d is None or d > EXPLORATION_END:
         return None
-    at = raw.get("adjustment_type")
-    return Split(
-        d, float(raw["split_from"]), float(raw["split_to"]), None if at is None else str(at)
-    )
+    return Split(d, float(raw["split_from"]), float(raw["split_to"]))
 
 
 DIVIDEND_OTHER_DATES = ("declaration_date", "record_date", "pay_date")
@@ -261,14 +259,15 @@ DIVIDEND_OTHER_DATES = ("declaration_date", "record_date", "pay_date")
 
 @dataclass(frozen=True, slots=True)
 class Dividend:
+    """分红一行（旧路径 /v3/reference/dividends 的字段：ex_dividend_date、cash_amount、
+    dividend_type、declaration_date、record_date、pay_date）。"""
+
     day: date  # ex_dividend_date
     cash_amount: float | None
-    currency: str | None
+    dividend_type: str | None
     declaration_date: date | None
     record_date: date | None
     pay_date: date | None
-    frequency: int | None
-    distribution_type: str | None
     masked_after_2019: tuple[str, ...]  # 晚于截止日、已写为空的日期字段名
 
     def __post_init__(self) -> None:
@@ -290,17 +289,14 @@ def seal_dividend(raw: Mapping[str, Any]) -> Dividend | None:
             masked.append(f)
             v = None
         other[f] = v
-    freq = raw.get("frequency")
-    cur, dt = raw.get("currency"), raw.get("distribution_type")
+    dt = raw.get("dividend_type")
     return Dividend(
         d,
         _num(raw.get("cash_amount")),
-        None if cur is None else str(cur),
+        None if dt is None else str(dt),
         other["declaration_date"],
         other["record_date"],
         other["pay_date"],
-        None if freq is None else int(freq),
-        None if dt is None else str(dt),
         tuple(masked),
     )
 

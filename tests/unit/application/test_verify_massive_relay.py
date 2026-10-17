@@ -290,3 +290,25 @@ def test_cli_requires_yes(
     code = cli._cmd_verify_massive_relay(argparse.Namespace(per_minute=None))  # noqa: SLF001
     assert svc.ran is ran and code == (130 if ran else 1)
     assert f"将要连接的主机：{HOST}" in capsys.readouterr().out
+
+
+class _FakePaidService(_FakeService):
+    planned = {"prices": 50, "actions": 25, "lists": 5}
+
+
+@pytest.mark.parametrize(("answer", "ran"), [("no", False), ("", False), ("yes", True)])
+def test_cli_probe_massive_paid_requires_yes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    answer: str,
+    ran: bool,
+) -> None:
+    """T08d-2c 判定后：probe-massive-paid 同样先打印主机，输入 yes 才运行。"""
+    svc = _FakePaidService()
+    monkeypatch.setattr(cli, "load_settings", lambda: load_settings(tmp_path))
+    monkeypatch.setattr(cli, "build_probe_massive_paid_service", lambda *a, **k: svc)
+    monkeypatch.setattr(builtins, "input", lambda prompt="": answer)
+    code = cli._cmd_probe_massive_paid(argparse.Namespace(out="", per_minute=None))  # noqa: SLF001
+    assert svc.ran is ran and code == (130 if ran else 1)
+    assert f"将要连接的主机：{HOST}" in capsys.readouterr().out

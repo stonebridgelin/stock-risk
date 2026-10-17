@@ -3,7 +3,7 @@
 
 _progress.json                 各项状态与计数（断点续传依据；不含原始响应）
 aggs/<代码>_<raw|adj>.csv        第 1 节日线：date,open,high,low,close,volume,vwap,trades
-actions/<代码>_splits.csv        第 2 节拆股：execution_date,split_from,split_to,adjustment_type
+actions/<代码>_splits.csv        第 2 节拆股：execution_date,split_from,split_to
 actions/<代码>_dividends.csv     第 2 节分红：除息日、金额、币种、其他日期（晚于截止日的已写为空）等
 lists/lists_<快照>.csv           第 3 节清单逐行（白名单字段）
 lists/labels_<快照>.csv          第 3 节逐行补标签结果与所用规则
@@ -40,16 +40,14 @@ from stock_risk.infrastructure.storage.massive_source_host import (
 )
 
 BAR_COLUMNS = ["date", "open", "high", "low", "close", "volume", "vwap", "trades"]
-SPLIT_COLUMNS = ["execution_date", "split_from", "split_to", "adjustment_type"]
+SPLIT_COLUMNS = ["execution_date", "split_from", "split_to"]
 DIVIDEND_COLUMNS = [
     "ex_dividend_date",
     "cash_amount",
-    "currency",
+    "dividend_type",
     "declaration_date",
     "record_date",
     "pay_date",
-    "frequency",
-    "distribution_type",
     "masked_after_2019",
 ]
 LIST_COLUMNS = [*LIST_FIELDS, "list_date", "delisted_utc", "delisted_after_2019"]
@@ -168,7 +166,6 @@ class MassivePaidFiles:
                     "execution_date": s.day.isoformat(),
                     "split_from": s.split_from,
                     "split_to": s.split_to,
-                    "adjustment_type": s.adjustment_type,
                 }
                 for s in splits
             ],
@@ -180,12 +177,10 @@ class MassivePaidFiles:
                 {
                     "ex_dividend_date": d.day.isoformat(),
                     "cash_amount": d.cash_amount,
-                    "currency": d.currency,
+                    "dividend_type": d.dividend_type,
                     "declaration_date": _iso(d.declaration_date),
                     "record_date": _iso(d.record_date),
                     "pay_date": _iso(d.pay_date),
-                    "frequency": d.frequency,
-                    "distribution_type": d.distribution_type,
                     "masked_after_2019": "|".join(d.masked_after_2019),
                 }
                 for d in dividends
@@ -198,7 +193,6 @@ class MassivePaidFiles:
                 date.fromisoformat(r["execution_date"]),
                 float(r["split_from"]),
                 float(r["split_to"]),
-                r["adjustment_type"] or None,
             )
             for r in _read(self._dir / "actions" / f"{ticker}_splits.csv")
         ]
@@ -206,12 +200,10 @@ class MassivePaidFiles:
             Dividend(
                 date.fromisoformat(r["ex_dividend_date"]),
                 _opt_float(r["cash_amount"]),
-                r["currency"] or None,
+                r["dividend_type"] or None,
                 _opt_date(r["declaration_date"]),
                 _opt_date(r["record_date"]),
                 _opt_date(r["pay_date"]),
-                int(r["frequency"]) if r["frequency"] else None,
-                r["distribution_type"] or None,
                 tuple(x for x in r["masked_after_2019"].split("|") if x),
             )
             for r in _read(self._dir / "actions" / f"{ticker}_dividends.csv")

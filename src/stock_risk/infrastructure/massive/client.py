@@ -13,7 +13,8 @@
   连续 3 次 429 抛 RateLimitError；
 - 封存：请求参数 date 不得晚于 2019-12-31（domain.massive_probe.check_query_date）；
 - 查询的 exchange、type、market 为 None 时请求中不传该参数（第 2.4 节）；
-- 付费档（T08d-2b）：日线 Aggregates、拆股 /stocks/v1/splits、分红 /stocks/v1/dividends；
+- 付费档（T08d-2b）：日线 Aggregates、拆股 /v3/reference/splits、分红 /v3/reference/dividends
+  （旧路径；中转服务在 /stocks/v1/ 路径上返回 404，T08d-2c 判定）；
   日线的 to 不得晚于 2019-12-31（domain.massive_paid.check_price_range）。
   适配器不读配置：用哪个密钥由 bootstrap 决定。
 只用标准库 urllib；原始响应只在内存中解析后返回，不写盘。
@@ -42,6 +43,7 @@ ALLOWED_BASE_URLS = (BASE_URL, RELAY_BASE_URL)
 # 固定的请求标识（T08d-2c）：中转服务前的 Cloudflare 拦截 urllib 默认的 Python-urllib（403，1010）
 USER_AGENT = "stock-risk/1.0"
 PAGE_LIMIT = 1000  # All Tickers 每页上限（文档）
+V3_PAGE_LIMIT = 1000  # 旧路径 /v3/reference/splits、dividends 每页上限（文档）
 MAX_PAGES = 200  # 防止 next_url 循环
 
 Transport = Callable[[urllib.request.Request], Any]
@@ -136,26 +138,30 @@ class MassiveReference:
         return self._paginate(url, MAX_PAGES, "Aggregates")
 
     def splits(self, ticker: str, until: date) -> TickerPages:
-        """拆股 /stocks/v1/splits：ticker、execution_date.lte（不晚于 2019-12-31）。"""
+        """拆股 /v3/reference/splits：ticker、execution_date.lte（不晚于 2019-12-31），
+        按执行日升序；翻页用 next_url。"""
         check_query_date(until)
         params = {
             "ticker": ticker,
             "execution_date.lte": until.isoformat(),
-            "limit": "5000",
-            "sort": "execution_date.asc",
+            "limit": str(V3_PAGE_LIMIT),
+            "sort": "execution_date",
+            "order": "asc",
         }
-        return self._reference("/stocks/v1/splits", params, "Splits")
+        return self._reference("/v3/reference/splits", params, "Splits")
 
     def dividends(self, ticker: str, until: date) -> TickerPages:
-        """分红 /stocks/v1/dividends：ticker、ex_dividend_date.lte（不晚于 2019-12-31）。"""
+        """分红 /v3/reference/dividends：ticker、ex_dividend_date.lte（不晚于 2019-12-31），
+        按除息日升序；翻页用 next_url。"""
         check_query_date(until)
         params = {
             "ticker": ticker,
             "ex_dividend_date.lte": until.isoformat(),
-            "limit": "5000",
-            "sort": "ex_dividend_date.asc",
+            "limit": str(V3_PAGE_LIMIT),
+            "sort": "ex_dividend_date",
+            "order": "asc",
         }
-        return self._reference("/stocks/v1/dividends", params, "Dividends")
+        return self._reference("/v3/reference/dividends", params, "Dividends")
 
     def _reference(self, path: str, params: dict[str, str], what: str) -> TickerPages:
         url = f"{self._base}{path}?{urllib.parse.urlencode(params)}"

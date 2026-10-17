@@ -65,6 +65,9 @@ class PaidSource(Protocol):
     @property
     def request_count(self) -> int: ...
 
+    @property
+    def source_host(self) -> str: ...
+
     def aggs(self, ticker: str, start: date, end: date, adjusted: bool) -> TickerPages | None: ...
 
     def splits(self, ticker: str, until: date) -> TickerPages: ...
@@ -153,6 +156,20 @@ class ProbeMassivePaidService:
         self._progress = progress
         self._tickers = tuple(tickers) if tickers is not None else paid_tickers()
         self._lists = tuple(list_queries) if list_queries is not None else paid_list_queries()
+
+    @property
+    def source_host(self) -> str:
+        """将要连接的主机（命令行在运行前打印，T08d-2c 判定后）。"""
+        return self._source.source_host
+
+    @property
+    def planned(self) -> dict[str, int]:
+        """计划的项数：日线（每个代码未复权与复权各一次）、拆股与分红、清单快照。"""
+        return {
+            "prices": len(self._tickers) * len(KINDS),
+            "actions": len(self._tickers),
+            "lists": len(self._lists),
+        }
 
     def run(self) -> PaidResult:
         state = self._store.load_progress()

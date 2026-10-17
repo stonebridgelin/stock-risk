@@ -4,6 +4,7 @@ uv run stock-risk probe-massive [--out data/massive_probe] [--per-minute 5]
 uv run stock-risk probe-massive --followup [--out data/massive_probe/followup] [--per-minute 5]
 uv run stock-risk probe-massive-paid [--out data/massive_probe/paid] [--per-minute 100]
 uv run stock-risk verify-massive-relay [--per-minute 100]   中转服务核验（T08d-2c，需输入 yes 确认）
+付费档的两个命令运行前打印将要连接的主机，输入 yes 才继续。
 """
 
 from __future__ import annotations
@@ -84,6 +85,16 @@ def _cmd_probe_massive_paid(args: argparse.Namespace) -> int:
     settings = load_settings()
     out = Path(args.out) if args.out else settings.massive_paid_dir
     service = build_probe_massive_paid_service(settings, out, args.per_minute, progress=print)
+    print(f"将要连接的主机：{service.source_host}（密钥 MASSIVE_ADVANCED_API_KEY，以请求头发送）")
+    print(f"输出目录：{out}")
+    plan = service.planned
+    print(
+        f"计划：日线 {plan['prices']} 次；拆股与分红 {plan['actions']} 个代码；"
+        f"清单快照 {plan['lists']} 个（可能翻页），另有抽样查询"
+    )
+    print("日线被 HTTP 401 或 403 拒绝时停止。")
+    if not _confirmed():
+        return 1
     try:
         r = service.run()
     except KeyboardInterrupt:
@@ -111,6 +122,18 @@ def _cmd_probe_massive_paid(args: argparse.Namespace) -> int:
     return 1 if r.stopped else 0
 
 
+def _confirmed() -> bool:
+    """付费档命令运行前的确认：只有输入 yes 才继续，否则不发任何请求。"""
+    try:
+        answer = input("确认连接上述主机，请输入 yes：")
+    except EOFError:
+        answer = ""
+    if answer.strip() != "yes":
+        print("未确认，未发出任何请求。")
+        return False
+    return True
+
+
 def _cmd_verify_massive_relay(args: argparse.Namespace) -> int:
     settings = load_settings()
     service = build_verify_massive_relay_service(settings, args.per_minute, progress=print)
@@ -122,12 +145,7 @@ def _cmd_verify_massive_relay(args: argparse.Namespace) -> int:
         f"第 3.2 节清单查询 {plan['lists']} 种（可能翻页）"
     )
     print("遇到 HTTP 401 或 403 立即停止。")
-    try:
-        answer = input("确认连接上述主机，请输入 yes：")
-    except EOFError:
-        answer = ""
-    if answer.strip() != "yes":
-        print("未确认，未发出任何请求。")
+    if not _confirmed():
         return 1
     try:
         r = service.run()

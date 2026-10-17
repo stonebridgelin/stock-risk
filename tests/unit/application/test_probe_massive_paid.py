@@ -158,7 +158,7 @@ def test_seal_split_and_dividend() -> None:
 
 def test_split_adjustment_and_compare() -> None:
     raw = [Bar(D(2014, 6, 6), 1, 1, 1, 700.0, 1, 1, 1), Bar(D(2014, 6, 9), 1, 1, 1, 93.0, 1, 1, 1)]
-    mine = split_adjusted_close(raw, [Split(D(2014, 6, 9), 1, 7, "forward_split")])
+    mine = split_adjusted_close(raw, [Split(D(2014, 6, 9), 1, 7)])
     assert mine == {D(2014, 6, 6): 100.0, D(2014, 6, 9): 93.0}
     adj = [Bar(D(2014, 6, 6), 1, 1, 1, 100.0, 1, 1, 1), Bar(D(2014, 6, 9), 1, 1, 1, 93.1, 1, 1, 1)]
     c = compare_adjusted(mine, adj)
@@ -180,7 +180,7 @@ def test_compare_actions_with_tiingo() -> None:
         ReferenceAction(D(2008, 11, 18), "dividend", 0.13),
         ReferenceAction(D(2014, 6, 9), "split", 7.0),
     ]
-    c = compare_actions([Split(D(2014, 6, 9), 1, 7, None)], [d for d in divs if d], ref)
+    c = compare_actions([Split(D(2014, 6, 9), 1, 7)], [d for d in divs if d], ref)
     dv = c["dividends"]
     assert (dv["match"], dv["same_date_value_differs"], dv["only_massive"], dv["only_tiingo"]) == (
         1,
@@ -306,8 +306,8 @@ def test_client_aggs_splits_dividends_requests() -> None:
     assert (
         p1 == "/v2/aggs/ticker/MSFT/range/1/day/2008-01-02/2019-12-31" and q1["adjusted"] == "false"
     )
-    assert p2 == "/stocks/v1/splits" and q2["execution_date.lte"] == "2019-12-31"
-    assert p3 == "/stocks/v1/dividends" and q3["ex_dividend_date.lte"] == "2019-12-31"
+    assert p2 == "/v3/reference/splits" and q2["execution_date.lte"] == "2019-12-31"
+    assert p3 == "/v3/reference/dividends" and q3["ex_dividend_date.lte"] == "2019-12-31"
     for r in t.requests:
         assert KEY not in r.full_url and r.get_header("Authorization") == f"Bearer {KEY}"
     with pytest.raises(SealViolation):
