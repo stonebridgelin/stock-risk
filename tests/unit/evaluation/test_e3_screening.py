@@ -1,7 +1,6 @@
 """T09-E3：18 号 D28a–c、D38（季度筛选）。期望值取自夹具 JSON。
 
-W1 只给出第 100 日的成交量，其余日子的成交量夹具中没有（回执停止项 E3-01）。
-在得到裁定之前，这里不输入 W1，并从期望值中去掉 W1 一项；其余期望值逐项比较。
+v1.3 起 W1 有基础成交量（T09-E3M），四个夹具完整比较。
 """
 
 from decimal import Decimal
@@ -20,17 +19,24 @@ from stock_risk.domain.numeric import InvalidInputError
 from tests.unit.evaluation.helpers import load_fixtures, workdays
 
 G, M_MASK = 10, 83  # 18 号约定
-PENDING = {"W1"}  # 停止项 E3-01
 
 
 def d_case(case_id: str) -> dict[str, Any]:
     return load_fixtures()["D"][case_id]
 
 
+def volume_of(raw_volume: int | dict[str, int], day: int) -> Decimal:
+    """conventions.raw_volume：整数为每日相同；对象的 "default" 为其余日子，其他键为日序号。"""
+    if isinstance(raw_volume, int):
+        return Decimal(raw_volume)
+    if "default" not in raw_volume:
+        raise ValueError("raw_volume 的对象写法必须给出 default")
+    return Decimal(raw_volume.get(str(day), raw_volume["default"]))
+
+
 def make_security(spec: dict[str, Any], days: tuple) -> ScreenSecurity:  # type: ignore[type-arg]
-    assert isinstance(spec["raw_volume"], int), spec["id"]
     bars = tuple(
-        ScreenBar(days[i], Decimal(spec["raw_close"]), Decimal(spec["raw_volume"]))
+        ScreenBar(days[i], Decimal(spec["raw_close"]), volume_of(spec["raw_volume"], i))
         for lo, hi in spec["bar_days"]
         for i in range(lo, hi + 1)
     )
@@ -39,7 +45,7 @@ def make_security(spec: dict[str, Any], days: tuple) -> ScreenSecurity:  # type:
 
 def assert_screen(case_id: str, securities_of: str | None = None) -> None:
     case = d_case(case_id)
-    specs = [s for s in d_case(securities_of or case_id)["securities"] if s["id"] not in PENDING]
+    specs = d_case(securities_of or case_id)["securities"]
     last = max([case["screen_day"], *(hi for s in specs for _, hi in s["bar_days"])])
     days = workdays(last + 1)
     result = screen_quarter(
@@ -53,17 +59,10 @@ def assert_screen(case_id: str, securities_of: str | None = None) -> None:
         M_MASK,
     )
     expected = case["expected"]
-    eligibility = {k: v for k, v in expected["eligibility"].items() if k not in PENDING}
-    assert {k: v.value for k, v in result.eligibility.items()} == eligibility
-    ranking = [(c, Decimal(v)) for c, v in expected["ranking"] if c not in PENDING]
-    assert list(result.ranking) == ranking
+    assert {k: v.value for k, v in result.eligibility.items()} == expected["eligibility"]
+    assert list(result.ranking) == [(c, Decimal(v)) for c, v in expected["ranking"]]
     assert list(result.selected) == expected["selected"]
-    rep_after = {
-        k: v
-        for k, v in expected["rep_map_after"].items()
-        if v not in PENDING or k in case["rep_map_before"]  # 已固定者沿用，与 W1 的输入无关
-    }
-    assert dict(result.rep_map) == rep_after
+    assert dict(result.rep_map) == expected["rep_map_after"]
 
 
 def test_D28a_development_screen() -> None:
@@ -80,6 +79,14 @@ def test_D28c_rep_suspended_issuer_absent() -> None:
 
 def test_D38_validation_screen_keeps_exploration_issuers() -> None:
     assert_screen("D38", securities_of="D28a")
+
+
+def test_raw_volume_forms() -> None:
+    assert volume_of(900, 5) == Decimal(900)
+    assert volume_of({"default": 700, "100": 1000000}, 99) == Decimal(700)
+    assert volume_of({"default": 700, "100": 1000000}, 100) == Decimal(1000000)
+    with pytest.raises(ValueError, match="default"):
+        volume_of({"100": 1000000}, 99)
 
 
 def test_screen_reason_order_and_inputs() -> None:
