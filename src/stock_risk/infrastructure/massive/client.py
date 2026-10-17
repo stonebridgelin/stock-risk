@@ -4,6 +4,8 @@
   Ticker Overview `/v3/reference/tickers/{ticker}`；
 - 认证：请求头 `Authorization: Bearer <key>`（Massive 文档 quickstart），密钥不进 URL；
   next_url 中若带 apiKey 参数一律去掉，且只接受与本实例主机相同的 https 地址；
+  请求头带固定的 `User-Agent: stock-risk/1.0`（免费档与付费档相同；
+  不用 urllib 默认的 Python-urllib）；
 - 主机（T08d-2c）：默认 api.massive.com；付费档可配置为中转服务 relaynex.vip，只允许这两个取值。
   一个实例只连一个主机，密钥只发往该主机；用哪个主机、哪个密钥由 bootstrap 决定；
 - 日志、异常信息中不出现 URL 与密钥；服务端错误原文中若出现密钥也替换为 ***；
@@ -37,6 +39,8 @@ HOST = "api.massive.com"
 BASE_URL = f"https://{HOST}"
 RELAY_BASE_URL = "https://relaynex.vip"  # T08d-2c：第三方中转服务，只用于付费档
 ALLOWED_BASE_URLS = (BASE_URL, RELAY_BASE_URL)
+# 固定的请求标识（T08d-2c）：中转服务前的 Cloudflare 拦截 urllib 默认的 Python-urllib（403，1010）
+USER_AGENT = "stock-risk/1.0"
 PAGE_LIMIT = 1000  # All Tickers 每页上限（文档）
 MAX_PAGES = 200  # 防止 next_url 循环
 
@@ -231,7 +235,12 @@ class MassiveReference:
 
     def _get(self, url: str) -> dict[str, Any] | None:
         req = urllib.request.Request(
-            url, headers={"Authorization": f"Bearer {self._key}", "Accept": "application/json"}
+            url,
+            headers={
+                "Authorization": f"Bearer {self._key}",
+                "Accept": "application/json",
+                "User-Agent": USER_AGENT,
+            },
         )
         for attempt in range(1, self._max_retries + 1):
             self._throttle()

@@ -174,6 +174,38 @@ def test_each_key_only_to_its_own_host(root: Path) -> None:
             assert key not in req.full_url and other not in req.full_url
 
 
+def test_every_request_has_fixed_user_agent(root: Path) -> None:
+    """中转服务前的 Cloudflare 拦截 Python-urllib（403，error code 1010）：
+    免费档与付费档都带固定标识。"""
+    _env(
+        root,
+        MASSIVE_API_KEY=FREE,
+        MASSIVE_ADVANCED_API_KEY=PAID,
+        MASSIVE_ADVANCED_BASE_URL=RELAY,
+    )
+    s = load_settings(root)
+    free = bootstrap.build_probe_massive_service(s, root / "free")._source  # noqa: SLF001
+    paid = bootstrap.build_verify_massive_relay_service(s)._source  # noqa: SLF001
+    tf = Capture()
+    tp = Capture(
+        {"results": [{"ticker": "A"}], "next_url": f"{RELAY}/v3/reference/tickers?cursor=c"},
+        {"results": []},
+    )
+    _wire(free, tf)
+    _wire(paid, tp)
+    free.list_tickers(Q)
+    paid.list_tickers(Q)  # 含翻页请求
+    paid.aggs("MSFT", date(2019, 1, 2), date(2019, 1, 31), False)
+    paid.overview("MSFT", date(2019, 6, 3))
+    requests = tf.requests + tp.requests
+    assert len(requests) == 5
+    for req in requests:
+        assert req.get_header("User-agent") == "stock-risk/1.0"
+        headers = " ".join(f"{k}: {v}" for k, v in req.header_items())
+        assert "Python-urllib" not in headers
+        assert req.get_header("Authorization") in (f"Bearer {FREE}", f"Bearer {PAID}")
+
+
 def test_free_commands_ignore_base_url(root: Path) -> None:
     _env(root, MASSIVE_API_KEY=FREE, MASSIVE_ADVANCED_BASE_URL=RELAY)
     s = load_settings(root)
