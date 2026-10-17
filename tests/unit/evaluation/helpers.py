@@ -15,6 +15,7 @@ from stock_risk.domain.evaluation.event_model import (
     EventSetSpec,
 )
 from stock_risk.domain.evaluation.events import build_events
+from stock_risk.domain.evaluation.method_series import AlertLevel, MethodEvent, MethodSeries
 from stock_risk.domain.evaluation.params import PROPOSED_EXPLORATION
 from stock_risk.domain.evaluation.series import EndReason, EvalSeries
 from stock_risk.domain.market_data import DailyBar
@@ -50,7 +51,7 @@ def make_series(case: dict[str, Any], stop: int | None = None) -> EvalSeries:
     return EvalSeries(
         TradingCalendar(days),
         tuple(bars),
-        case["G"],
+        case.get("G", 10),  # 夹具约定 G = 10（conventions.G）；B 组夹具不单列
         PROPOSED_EXPLORATION.mask_min,
         EndReason(case.get("end_reason", "DATA_END")),
     )
@@ -94,3 +95,25 @@ def assert_case(case_id: str) -> None:
         assert event.a_s == (
             series.atr20[series.index(event.s)] if case["event_set"]["kind"] == "atr" else None
         )
+
+
+def make_method(series: EvalSeries, name: str, spec: dict[str, Any]) -> MethodSeries:
+    """夹具区段 → MethodSeries。
+
+    区段格式为 [起日, 止日（含）, episode_id, 起始等级, {日: 新等级}]；区段外不在警。"""
+    days = series.calendar.days
+    levels: list[AlertLevel | None] = [None] * len(days)
+    episodes: list[str | None] = [None] * len(days)
+    for start, end, episode, level, changes in spec["spans"]:
+        current = AlertLevel(level)
+        for i in range(start, end + 1):
+            current = AlertLevel(changes[str(i)]) if str(i) in changes else current
+            levels[i], episodes[i] = current, episode
+    events = tuple(
+        MethodEvent(kind, days[day], episode) for kind, day, episode, *_ in spec["events"]
+    )
+    return MethodSeries(name, days, tuple(levels), tuple(episodes), events)
+
+
+def day_or_none(series: EvalSeries, value: int | None) -> date | None:
+    return series.calendar.days[value] if value is not None else None
