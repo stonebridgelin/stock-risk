@@ -119,7 +119,8 @@ def test_B41_post_release_windows(sub: str) -> None:
             "complete": w.complete,
             "adverse": w.adverse,
             "first_adverse_day": idx(series, w.first_adverse_day),
-            "criteria": list(w.criteria) if w.criteria is not None else None,
+            # 夹具的 criteria 即首个不利日满足的条件（T09-C1 C-05 起字段名为 first_criteria）
+            "criteria": list(w.first_criteria) if w.first_criteria is not None else None,
             "observed": w.observed,
             "A_r": w.a_r,
         }

@@ -7,6 +7,8 @@
 2. 第 3.1 节价格对账：27 只探索股的未复权日线（2010-01-01 至 2019-12-31）与 Tiingo 逐日对账；
 3. 第 3.2 节参考数据：按 T08d-2a 的 32 种清单查询从中转服务取一份，与官方快照逐条比对。
 任何请求返回 401 或 403：记录原文后立即停止全部运行，不换密钥重试；连续 3 次 429 保存进度后退出。
+分页未完成（complete 为假）的项记 incomplete，不计为成功，下次运行重新获取，计入剩余项；
+只取第一页的两种清单试探除外（T09-C1 C-03）。
 封存：请求的 to / date 不晚于 2019-12-31；响应中晚于截止日的行在内存中丢弃并计数。
 照实记录，不作判定（判定由产品经理按任务卡第 4 节执行）。
 """
@@ -84,6 +86,7 @@ class Probe:
     request: str
     call: Callable[[RelaySource], Any]
     seal: Callable[[list[dict[str, Any]]], tuple[int, int]] | None = None  # → (保留, 丢弃)
+    first_page_only: bool = False  # 只取第一页：分页未完成是预期的，不记 incomplete
 
 
 def _seal_rows(fn: Callable[[Mapping[str, Any]], Any]) -> Callable[[list[dict]], tuple[int, int]]:  # type: ignore[type-arg]
@@ -113,9 +116,9 @@ def coverage_probes() -> tuple[Probe, ...]:
         Probe("dividends", "分红 KO ex_dividend_date ≤ 2019-12-31",
               lambda s: s.dividends("KO", EXPLORATION_END), _seal_rows(seal_dividend)),
         Probe("list_active", f"证券清单 active=true，{stocks}",
-              lambda s: s.list_tickers_pages(_stocks(True), 1), _seal_rows(seal_list_row)),
+              lambda s: s.list_tickers_pages(_stocks(True), 1), _seal_rows(seal_list_row), True),
         Probe("list_inactive", f"证券清单 active=false，{stocks}",
-              lambda s: s.list_tickers_pages(_stocks(False), 1), _seal_rows(seal_list_row)),
+              lambda s: s.list_tickers_pages(_stocks(False), 1), _seal_rows(seal_list_row), True),
         Probe("overview", "证券详情 MSFT date=2019-06-03",
               lambda s: s.overview("MSFT", COVERAGE_DAY)),
     )  # fmt: skip
@@ -241,7 +244,7 @@ class VerifyMassiveRelayService:
 
     def _run_coverage(self, state: dict[str, Any]) -> None:
         for p in self._probes:
-            if p.name in state["coverage"]:
+            if _done(state["coverage"], p.name):
                 continue
             self._progress(f"[试探] {p.request}")
             got = self._call(state, p.name, lambda p=p: p.call(self._source))
@@ -254,7 +257,7 @@ class VerifyMassiveRelayService:
         if not self._available(state, PRICE_NEEDS):
             return
         for t in self._tickers:
-            if t in state["prices"]:
+            if _done(state["prices"], t):
                 continue
             self._progress(f"[价格] {t}")
             got = self._call(
@@ -267,7 +270,7 @@ class VerifyMassiveRelayService:
             elif got is None:
                 state["prices"][t] = {"status": "not_found"}
             elif not got.complete:
-                state["prices"][t] = {"status": "error", "message": f"分页超过 {got.pages} 页"}
+                state["prices"][t] = {"status": "incomplete", "pages": got.pages}
             elif t not in self._tiingo:
                 state["prices"][t] = {"status": "no_tiingo"}
             else:
@@ -284,7 +287,7 @@ class VerifyMassiveRelayService:
         if not self._available(state, REFERENCE_NEEDS):
             return
         for q in self._queries:
-            if q.key in state["lists"] or q.key not in self._official:
+            if _done(state["lists"], q.key) or q.key not in self._official:
                 continue
             self._progress(f"[清单] {q.key}")
             got = self._call(
@@ -295,7 +298,7 @@ class VerifyMassiveRelayService:
             if isinstance(got, _Fail):
                 state["lists"][q.key] = got.status
             elif not got.complete:
-                state["lists"][q.key] = {"status": "error", "message": f"分页超过 {got.pages} 页"}
+                state["lists"][q.key] = {"status": "incomplete", "pages": got.pages}
             else:
                 sealed = [s for s in (seal_ticker(r) for r in got.rows) if s is not None]
                 self._store.save_relay_list(q.key, [s.as_row() for s in sealed])
@@ -372,22 +375,34 @@ class VerifyMassiveRelayService:
                 not in (None, "ok")
             ],
             "seal": self._seal_counts(state),
+            "incomplete": [
+                f"{part}_{k}"
+                for part in ("coverage", "prices", "lists")
+                for k, v in state[part].items()
+                if v.get("status") == "incomplete"
+            ],
             "requests_total": state["requests"],
             "elapsed_seconds_total": state["elapsed_seconds"],
         }  # fmt: skip
 
     def _remaining(self, state: Mapping[str, Any]) -> list[str]:
-        out = [p.name for p in self._probes if p.name not in state["coverage"]]
+        """未尝试的项，加上已尝试但分页不完整的项（下次运行重新获取）。"""
+        out = [p.name for p in self._probes if not _done(state["coverage"], p.name)]
         pending = bool(out)  # 试探未完成时，第 3 节各项都还未定
         if pending or self._available(state, PRICE_NEEDS):
-            out += [f"prices_{t}" for t in self._tickers if t not in state["prices"]]
+            out += [f"prices_{t}" for t in self._tickers if not _done(state["prices"], t)]
         if pending or self._available(state, REFERENCE_NEEDS):
             out += [
                 f"list_{q.key}"
                 for q in self._queries
-                if q.key in self._official and q.key not in state["lists"]
+                if q.key in self._official and not _done(state["lists"], q.key)
             ]
         return out
+
+
+def _done(part: Mapping[str, Any], key: str) -> bool:
+    """已尝试且不是"分页不完整"的项，恢复时跳过；不完整的项重新获取（T09-C1 C-03）。"""
+    return key in part and part[key].get("status") != "incomplete"
 
 
 def _coverage_status(p: Probe, got: Any) -> dict[str, Any]:
@@ -398,9 +413,11 @@ def _coverage_status(p: Probe, got: Any) -> dict[str, Any]:
         return {"status": "not_found", "http_status": 404}
     if isinstance(got, TickerPages):
         kept, dropped = p.seal(got.rows) if p.seal else (len(got.rows), 0)
+        ok = got.complete or p.first_page_only
         return {
-            "status": "ok",
+            "status": "ok" if ok else "incomplete",
             "http_status": 200,
+            "complete": got.complete,
             "pages": got.pages,
             "rows": kept,
             "dropped_after_2019": dropped,

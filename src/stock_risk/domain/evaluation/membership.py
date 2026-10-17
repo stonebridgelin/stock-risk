@@ -116,7 +116,7 @@ def summarize_rates(rates: Iterable[Rate]) -> RateSummary:
 class Segment(StrEnum):
     FRONT = "FRONT"
     BACK = "BACK"
-    NEITHER = "NEITHER"  # 峰值在前段、所需数据延伸到后段（17 §5.3）
+    NEITHER = "NEITHER"  # 峰值在前段、所需数据延伸到后段（17 §5.3），或可确定日为空（T09-C1）
 
 
 def _ord(series: EvalSeries, day: date) -> int:
@@ -145,9 +145,12 @@ def window_determinable(
 
 
 def attribute(determinable: int | None, peak: int, front_end: int) -> Segment:
-    """17 §5.3：可确定日不晚于前段终点的归前段；峰值在前段而所需数据延伸到后段（或不可确定）的
-    两段都不用；峰值在后段的归后段。参数均为有效日序号。"""
-    if determinable is not None and determinable <= front_end:
+    """17 §5.3：可确定日不晚于前段终点的归前段；峰值在前段而所需数据延伸到后段的两段都不用；
+    峰值在后段的归后段。可确定日为空的指标一律两段都不用（T09-C1 C-02，R2-03：无法证明它只用到
+    某一段的数据）。参数均为有效日序号。"""
+    if determinable is None:
+        return Segment.NEITHER
+    if determinable <= front_end:
         return Segment.FRONT
     return Segment.NEITHER if peak <= front_end else Segment.BACK
 

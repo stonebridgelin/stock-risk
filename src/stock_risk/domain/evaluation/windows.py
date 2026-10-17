@@ -183,7 +183,9 @@ def h_window(
         return _empty(t_h, "EMPTY_WINDOW", None)
     complete = ctx.data_end >= t_h
     cls = None if complete else WindowClass.C
-    w = _stats(ctx, k, min(t_h, ctx.data_end), t_h, cls, t_h, False, params.n_min)
+    # T09-C1 C-02：按是否实际被下一事件截短传值；下一峰值 − 1 恰等于 k + Y_max 不算截短
+    truncated = nxt is not None and nxt - 1 < k + params.y_max
+    w = _stats(ctx, k, min(t_h, ctx.data_end), t_h, cls, t_h, truncated, params.n_min)
     main_ok = w.main_included and complete and recovery.status is RecoveryStatus.NOT_RECOVERED
     reasons = set(w.reasons)
     if w.main_included and not main_ok:

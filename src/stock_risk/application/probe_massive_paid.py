@@ -5,8 +5,10 @@
 - 第 2 节：拆股与分红（封存处理后保存），与 Tiingo 对照，自算拆股调整与 adjusted=true 比较；
 - 第 3 节：5 个清单快照逐行保存，按规则 1—3 补主交易所与 type，抽样查 Ticker Overview 与日线首末日。
 响应只在内存中做封存处理，原始响应不落盘；每完成一项保存进度，中断后续传。
-日线请求被拒绝（HTTP 401 / 403）时视为付费档不支持历史价格：照实记录原文并停止（任务卡停止条件），
-不换密钥重试；连续 3 次 429 保存进度后退出。照实记录，不作结论。
+任何请求被拒绝（HTTP 401 / 403，日线、拆股、分红、清单、证券详情都算）：照实记录原文，保存进度后
+停止整个运行，再次运行时不发请求，不换密钥重试（T09-C1 C-04）；连续 3 次 429 保存进度后退出。
+分页未完成（complete 为假）的项记 incomplete：不计为成功、不用于复权与"齐全"统计，下次运行重新获取，
+计入剩余项（T09-C1 C-03）。照实记录，不作结论。
 """
 
 from __future__ import annotations
@@ -114,7 +116,8 @@ class PaidResult:
     paths: list[str]
     stopped: str | None = None  # rate_limited / plan_rejected
     requests_now: int = 0
-    remaining: list[str] = field(default_factory=list)
+    remaining: list[str] = field(default_factory=list)  # 未尝试的项与已尝试但不完整的项
+    incomplete: list[str] = field(default_factory=list)  # 其中已尝试但分页不完整的项
 
 
 @dataclass(frozen=True, slots=True)
@@ -180,6 +183,8 @@ class ProbeMassivePaidService:
         before, t0 = self._source.request_count, self._clock()
         stopped: str | None = None
         try:
+            if state.get("plan_rejected"):  # 已被 401 / 403 拒绝：不发任何请求
+                raise _Stop("plan_rejected")
             self._run_prices(state)
             self._run_actions(state)
             self._run_lists(state)
@@ -195,14 +200,19 @@ class ProbeMassivePaidService:
         summary["stopped"] = stopped or state.get("plan_rejected") and "plan_rejected"
         paths = self._store.write_outputs(labels, self._sample_rows(state), summary)
         return PaidResult(
-            summary, paths, stopped, self._source.request_count - before, self._remaining(state)
+            summary,
+            paths,
+            stopped,
+            self._source.request_count - before,
+            self._remaining(state),
+            _incomplete_keys(state),
         )
 
     # ---- 请求与错误处理 ----
 
-    def _call(self, fn: Callable[[], Any], price: bool = False) -> Any:
-        """发出请求；429 用尽抛 _Stop；日线被 401/403 拒绝视为付费档拒绝历史价格，记录后停止。
-        其余拒绝或错误返回 _Fail，照实记录，继续下一项。"""
+    def _call(self, state: dict[str, Any], what: str, fn: Callable[[], Any]) -> Any:
+        """发出请求；429 用尽抛 _Stop；任何请求被 401 / 403 拒绝：记录原文与请求项，保存进度后停止
+        整个运行（T09-C1 C-04）。其余拒绝或错误返回 _Fail，照实记录，继续下一项。"""
         try:
             return fn()
         except RateLimitError:
@@ -210,8 +220,10 @@ class ProbeMassivePaidService:
         except QueryRejected as e:
             self._progress(f"    被拒绝：HTTP {e.http_status} {e.message}")
             st = _status("rejected", http_status=e.http_status, message=e.message)
-            if price and e.http_status in PLAN_REJECT_STATUSES:
-                raise _PlanRejected(st) from None
+            if e.http_status in PLAN_REJECT_STATUSES:
+                state["plan_rejected"] = {**st, "what": what}
+                self._save(state)
+                raise _Stop("plan_rejected") from None
             return _Fail(st)
         except PriceSourceError as e:
             self._progress(f"    失败：{e}")
@@ -223,32 +235,25 @@ class ProbeMassivePaidService:
     # ---- 第 1 节 ----
 
     def _run_prices(self, state: dict[str, Any]) -> None:
-        if state.get("plan_rejected"):
-            raise _Stop("plan_rejected")
         for t in self._tickers:
             for kind in KINDS:
                 key = f"{t}_{kind}"
-                if key in state["prices"]:
+                if _done(state["prices"], key):
                     continue
                 self._progress(f"[日线] {key}")
-                try:
-                    got = self._call(
-                        lambda t=t, kind=kind: self._source.aggs(
-                            t, PRICE_FROM, PRICE_TO, kind == "adj"
-                        ),
-                        price=True,
-                    )
-                except _PlanRejected as e:
-                    state["prices"][key] = e.status
-                    state["plan_rejected"] = e.status
-                    self._save(state)
-                    raise _Stop("plan_rejected") from None
+                got = self._call(
+                    state,
+                    f"prices_{key}",
+                    lambda t=t, kind=kind: self._source.aggs(
+                        t, PRICE_FROM, PRICE_TO, kind == "adj"
+                    ),
+                )
                 if isinstance(got, _Fail):
                     state["prices"][key] = got.status
                 elif got is None:
                     state["prices"][key] = _status("not_found")
                 elif not got.complete:
-                    state["prices"][key] = _status("error", message=f"分页超过 {got.pages} 页")
+                    state["prices"][key] = _status("incomplete", pages=got.pages)
                 else:
                     bars, dropped = seal_bars(got.rows)
                     self._store.save_bars(t, kind, bars)
@@ -262,11 +267,15 @@ class ProbeMassivePaidService:
 
     def _run_actions(self, state: dict[str, Any]) -> None:
         for t in self._tickers:
-            if t in state["actions"]:
+            if _done(state["actions"], t):
                 continue
             self._progress(f"[拆股、分红] {t}")
-            sp = self._call(lambda t=t: self._source.splits(t, EXPLORATION_END))
-            dv = self._call(lambda t=t: self._source.dividends(t, EXPLORATION_END))
+            sp = self._call(
+                state, f"splits_{t}", lambda t=t: self._source.splits(t, EXPLORATION_END)
+            )
+            dv = self._call(
+                state, f"dividends_{t}", lambda t=t: self._source.dividends(t, EXPLORATION_END)
+            )
             if isinstance(sp, _Fail) or isinstance(dv, _Fail):
                 state["actions"][t] = _status(
                     "rejected_or_error",
@@ -276,9 +285,12 @@ class ProbeMassivePaidService:
             else:
                 splits = [s for s in (seal_split(r) for r in sp.rows) if s is not None]
                 divs = [d for d in (seal_dividend(r) for r in dv.rows) if d is not None]
-                self._store.save_actions(t, splits, divs)
+                self._store.save_actions(t, splits, divs)  # 不完整时保存已取得的部分
+                complete = sp.complete and dv.complete
                 state["actions"][t] = _status(
-                    "ok",
+                    "ok" if complete else "incomplete",
+                    splits_complete=sp.complete,
+                    dividends_complete=dv.complete,
                     splits=len(splits),
                     dividends=len(divs),
                     splits_dropped_after_2019=len(sp.rows) - len(splits),
@@ -293,14 +305,16 @@ class ProbeMassivePaidService:
     def _run_lists(self, state: dict[str, Any]) -> None:
         for q in self._lists:
             key = snapshot_key(q)
-            if key in state["lists"]:
+            if _done(state["lists"], key):
                 continue
             self._progress(f"[清单] {key}")
-            got = self._call(lambda q=q: self._source.list_tickers_pages(q, LIST_MAX_PAGES))
+            got = self._call(
+                state, f"list_{key}", lambda q=q: self._source.list_tickers_pages(q, LIST_MAX_PAGES)
+            )
             if isinstance(got, _Fail):
                 state["lists"][key] = got.status
             elif not got.complete:
-                state["lists"][key] = _status("error", message=f"分页超过 {got.pages} 页")
+                state["lists"][key] = _status("incomplete", pages=got.pages)
             else:
                 rows = [r for r in (seal_list_row(x) for x in got.rows) if r is not None]
                 self._store.save_list(key, rows)
@@ -323,7 +337,7 @@ class ProbeMassivePaidService:
         return out
 
     def _lists_done(self, state: Mapping[str, Any]) -> bool:
-        return all(snapshot_key(q) in state["lists"] for q in self._lists)
+        return all(_done(state["lists"], snapshot_key(q)) for q in self._lists)
 
     def _run_samples(self, state: dict[str, Any]) -> None:
         if not self._lists_done(state):
@@ -338,12 +352,21 @@ class ProbeMassivePaidService:
             self._save(state)
         for s in state["samples"]["chosen"]:
             key = f"{s['snapshot']}_{s['ticker']}"
-            if key in state["samples"]["done"]:
+            prev = state["samples"]["done"].get(key)
+            if prev is not None and prev["prices"].get("status") != "incomplete":
                 continue
             self._progress(f"[抽样] {key}")
             day = date.fromisoformat(s["date"])
-            ov = self._call(lambda s=s, day=day: self._source.overview(s["ticker"], day))
-            px = self._call(lambda s=s: self._source.aggs(s["ticker"], PRICE_FROM, PRICE_TO, False))
+            ov = self._call(
+                state,
+                f"overview_{key}",
+                lambda s=s, day=day: self._source.overview(s["ticker"], day),
+            )
+            px = self._call(
+                state,
+                f"sample_prices_{key}",
+                lambda s=s: self._source.aggs(s["ticker"], PRICE_FROM, PRICE_TO, False),
+            )
             state["samples"]["done"][key] = {
                 "overview": _overview_result(ov),
                 "prices": _sample_prices(px),
@@ -353,17 +376,25 @@ class ProbeMassivePaidService:
     # ---- 汇总 ----
 
     def _remaining(self, state: Mapping[str, Any]) -> list[str]:
+        """未尝试的项，加上已尝试但分页不完整的项（下次运行重新获取）。"""
         out = [
-            f"{t}_{k}" for t in self._tickers for k in KINDS if f"{t}_{k}" not in state["prices"]
+            f"{t}_{k}"
+            for t in self._tickers
+            for k in KINDS
+            if not _done(state["prices"], f"{t}_{k}")
         ]
-        out += [t for t in self._tickers if t not in state["actions"]]
-        out += [snapshot_key(q) for q in self._lists if snapshot_key(q) not in state["lists"]]
+        out += [t for t in self._tickers if not _done(state["actions"], t)]
+        out += [snapshot_key(q) for q in self._lists if not _done(state["lists"], snapshot_key(q))]
         chosen = state["samples"].get("chosen")
         if chosen is None:
             out.append("samples")
         else:
             done = state["samples"].get("done", {})
-            out += [k for k in (f"{s['snapshot']}_{s['ticker']}" for s in chosen) if k not in done]
+            out += [
+                k
+                for k in (f"{s['snapshot']}_{s['ticker']}" for s in chosen)
+                if k not in done or done[k]["prices"].get("status") == "incomplete"
+            ]
         return out
 
     def _sample_rows(self, state: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -504,6 +535,7 @@ class ProbeMassivePaidService:
         labels_part, labels = self._label_part(state)
         summary = {
             "plan_rejected": state.get("plan_rejected"),
+            "incomplete": _incomplete_keys(state),
             "prices": self._price_part(state),
             "actions": self._action_part(state),
             "labels": labels_part,
@@ -514,10 +546,19 @@ class ProbeMassivePaidService:
         return summary, labels
 
 
-class _PlanRejected(Exception):
-    def __init__(self, status: dict[str, Any]) -> None:
-        super().__init__("plan rejected")
-        self.status = status
+def _done(part: Mapping[str, Any], key: str) -> bool:
+    """已尝试且不是"分页不完整"的项，恢复时跳过；不完整的项重新获取（T09-C1 C-03）。"""
+    return key in part and part[key].get("status") != "incomplete"
+
+
+def _incomplete_keys(state: Mapping[str, Any]) -> list[str]:
+    """已尝试但分页不完整的项（summary.json 中单列）。"""
+    out = [f"prices_{k}" for k, v in state["prices"].items() if v.get("status") == "incomplete"]
+    out += [f"actions_{k}" for k, v in state["actions"].items() if v.get("status") == "incomplete"]
+    out += [f"lists_{k}" for k, v in state["lists"].items() if v.get("status") == "incomplete"]
+    done = state["samples"].get("done", {})
+    out += [f"samples_{k}" for k, v in done.items() if v["prices"].get("status") == "incomplete"]
+    return out
 
 
 def _overview_result(ov: Any) -> dict[str, Any]:
@@ -546,6 +587,8 @@ def _sample_prices(px: Any) -> dict[str, Any]:
         return px.status
     if px is None:
         return _status("not_found")
+    if not px.complete:
+        return _status("incomplete", pages=px.pages)
     bars, dropped = seal_bars(px.rows)
     if not bars:
         return _status("empty", rows=0, dropped_after_2019=dropped)

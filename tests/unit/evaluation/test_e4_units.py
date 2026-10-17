@@ -90,6 +90,13 @@ def test_judge_all_states() -> None:
         GateCell("q", ALL, None, SampleStatus.OK)
 
 
+def test_validation_h_tail_ungrouped_is_judged_not_undetermined() -> None:
+    """T09-C1 E4-01 裁定：验证期 h_tail 未分组照常只按全体判定，不返回 UNDETERMINED。"""
+    m = MinimumSamples(100, 30, 50, 15, 50, 15, 20, 50, 15, 20)
+    h = h_tail_grouping({"LOW": 25, "MID": 19, "HIGH": 30}, 74, m, Period.VALIDATION)
+    assert not h.grouped and h.overall is SampleStatus.OK
+
+
 def test_h_tail_grouped_when_every_group_has_enough() -> None:
     m = MinimumSamples(100, 30, 50, 15, 50, 15, 20, 50, 15, 20)
     h = h_tail_grouping({"LOW": 20, "MID": 20, "HIGH": 21}, 61, m, Period.DEVELOPMENT)

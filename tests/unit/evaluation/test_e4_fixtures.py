@@ -105,7 +105,7 @@ def test_D18_minimum_samples_development() -> None:
 
 def test_D18_validation_period_undetermined() -> None:
     """验证期：17 §10A 的三种情形（样本分母不足、结构上不可能、候选分母不足）都记 UNDETERMINED。
-    h_tail 未分组的情形见回执待确认项 E4-01（按 17 §3.1 仍只按全体判定）。"""
+    h_tail 未分组不在此列，照常只按全体判定（T09-C1 E4-01 裁定）。"""
     m, expected = _minimums(), _cases()
     val = Period.VALIDATION
     assert expected["验证期出现以上任一情形"] == "UNDETERMINED"

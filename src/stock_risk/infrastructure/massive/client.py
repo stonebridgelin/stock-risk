@@ -8,6 +8,8 @@
   不用 urllib 默认的 Python-urllib）；
 - 主机（T08d-2c）：默认 api.massive.com；付费档可配置为中转服务 relaynex.vip，只允许这两个取值。
   一个实例只连一个主机，密钥只发往该主机；用哪个主机、哪个密钥由 bootstrap 决定；
+- 不跟随重定向（T09-C1 C-01）：默认传输层遇到任何 3xx 都抛 RedirectRefused，
+  避免 Authorization 请求头被带到其他主机；
 - 日志、异常信息中不出现 URL 与密钥；服务端错误原文中若出现密钥也替换为 ***；
 - 限频：默认每分钟 5 次（免费档），两次请求最小间隔 60 / 上限 秒；遇 429 退避（60 秒 × 次数），
   连续 3 次 429 抛 RateLimitError；
@@ -49,8 +51,30 @@ MAX_PAGES = 200  # 防止 next_url 循环
 Transport = Callable[[urllib.request.Request], Any]
 
 
+class RedirectRefused(PriceSourceError):
+    """收到 3xx 重定向：不跟随（T09-C1 C-01）。信息只含状态码与目标主机，不含请求头。"""
+
+    def __init__(self, code: int, host: str | None) -> None:
+        super().__init__(f"HTTP {code} 重定向到 {host or '未知主机'}，不跟随，停止")
+        self.http_status = code
+        self.target_host = host
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """遇到任何 3xx 都不跟随：urlopen 默认会跟随重定向，并把 Authorization 请求头带到新的主机。"""
+
+    def redirect_request(  # type: ignore[override]
+        self, req: urllib.request.Request, fp: Any, code: int, msg: str, headers: Any, newurl: str
+    ) -> urllib.request.Request | None:
+        raise RedirectRefused(code, urllib.parse.urlsplit(newurl).hostname)
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect())
+
+
 def _default_transport(req: urllib.request.Request) -> Any:
-    with urllib.request.urlopen(req, timeout=60) as resp:  # noqa: S310 —— 只请求固定主机
+    """默认传输层：自建 opener，不跟随重定向（免费档与付费档相同）。"""
+    with _OPENER.open(req, timeout=60) as resp:  # 只请求固定主机
         return json.loads(resp.read().decode("utf-8"))
 
 
