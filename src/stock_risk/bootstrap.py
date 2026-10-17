@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -21,11 +21,15 @@ from stock_risk.application.progress import ProgressFn, quiet
 from stock_risk.application.replay import ReplayService
 from stock_risk.application.replay_run import ReplayRunService
 from stock_risk.application.show_ranges import ShowRangesService
+from stock_risk.application.verify_massive_relay import VerifyMassiveRelayService
 from stock_risk.config.settings import Settings
 from stock_risk.domain.massive_paid import COMPARE_TICKERS
-from stock_risk.domain.universe import UniverseMember
+from stock_risk.domain.massive_probe import list_queries
+from stock_risk.domain.universe import Role, UniverseMember
 from stock_risk.domain.universe_probe import CoverageRequest
 from stock_risk.infrastructure.calendars.xnys import ExchangeCalendarsXnys
+from stock_risk.infrastructure.massive.client import ALLOWED_BASE_URLS as MASSIVE_ALLOWED_BASE_URLS
+from stock_risk.infrastructure.massive.client import BASE_URL as MASSIVE_BASE_URL
 from stock_risk.infrastructure.massive.client import MassiveReference
 from stock_risk.infrastructure.replay.compare_files import CompareFileSink
 from stock_risk.infrastructure.replay.environment import LocalRunEnvironment
@@ -54,6 +58,11 @@ from stock_risk.infrastructure.storage.massive_paid_files import (
     read_tiingo_prices,
 )
 from stock_risk.infrastructure.storage.massive_probe_files import MassiveProbeFiles
+from stock_risk.infrastructure.storage.massive_source_host import SourceHostConflict
+from stock_risk.infrastructure.storage.massive_verify_files import (
+    MassiveVerifyFiles,
+    read_official_snapshots,
+)
 from stock_risk.infrastructure.storage.ranges_calendar_writers import (
     CalendarCheckFileWriter,
     RangesFileWriter,
@@ -107,6 +116,18 @@ def massive_paid_key(settings: Settings) -> str:
     if not key.strip():  # 未设置、空串、只有空白字符都视为没有密钥（T08d-2b 第 0.2a 节）
         raise SystemExit("未配置 MASSIVE_ADVANCED_API_KEY（项目根目录 .env 或环境变量）")
     return key
+
+
+def massive_paid_base_url(settings: Settings) -> str:
+    """付费档命令的主机（T08d-2c 第 1 节）：未设置或空白取官方主机；
+    只允许两个取值，其他值在入口停止。"""
+    value = settings.massive_advanced_base_url.strip()
+    if not value:
+        return MASSIVE_BASE_URL
+    if value not in MASSIVE_ALLOWED_BASE_URLS:
+        allowed = "、".join(MASSIVE_ALLOWED_BASE_URLS)
+        raise SystemExit(f"MASSIVE_ADVANCED_BASE_URL 只允许 {allowed}")
+    return value
 
 
 def build_probe_massive_service(
@@ -288,7 +309,8 @@ def build_probe_massive_paid_service(
 ) -> ProbeMassivePaidService:
     """Massive 付费档验证（T08d-2b）。
 
-    密钥只用 MASSIVE_ADVANCED_API_KEY；限频：命令行 > .env > 100 次/分钟。
+    密钥只用 MASSIVE_ADVANCED_API_KEY；主机取 MASSIVE_ADVANCED_BASE_URL（T08d-2c）；
+    限频：命令行 > .env > 100 次/分钟。
     """
     key = massive_paid_key(settings)
     spy = settings.raw_data_dir / "SPY.csv"
@@ -296,12 +318,57 @@ def build_probe_massive_paid_service(
         raise SystemExit(f"缺少交易日历：{spy}")
     rate = per_minute or settings.massive_per_minute or 100
     tickers = list(COMPARE_TICKERS)
+    source = MassiveReference(key, base_url=massive_paid_base_url(settings), per_minute=rate)
     return ProbeMassivePaidService(
-        source=MassiveReference(key, per_minute=rate),
-        store=MassivePaidFiles(out_dir),
+        source=source,
+        store=_host_checked(lambda: MassivePaidFiles(out_dir, source.source_host)),
         calendar=read_calendar(spy),
         tiingo_prices=read_tiingo_prices(settings.selection_raw_dir, tickers),
         tiingo_actions=read_tiingo_actions(settings.selection_raw_dir, tickers),
         clock=time.monotonic,
         progress=progress,
+    )
+
+
+def _host_checked[T](make: Callable[[], T]) -> T:
+    """构造付费档的输出存储；目录中已有其他主机的记录时在入口停止（T08d-2c 第 1 节）。"""
+    try:
+        return make()
+    except SourceHostConflict as e:
+        raise SystemExit(str(e)) from None
+
+
+def build_verify_massive_relay_service(
+    settings: Settings,
+    per_minute: int | None = None,
+    progress: ProgressFn = quiet,
+) -> VerifyMassiveRelayService:
+    """中转服务核验（T08d-2c 第 2、3 节）。
+
+    密钥只用 MASSIVE_ADVANCED_API_KEY，主机取 MASSIVE_ADVANCED_BASE_URL；
+    输出 data/massive_probe/paid/verify/。
+    价格对照 data/raw 中 27 只探索股（role = signal_target）的 Tiingo 未复权价；
+    参考数据对照 T08d-2a 的官方快照 data/massive_probe/lists_<日期>.csv（不发官方请求）。
+    """
+    key = massive_paid_key(settings)
+    spy = settings.raw_data_dir / "SPY.csv"
+    if not spy.exists():
+        raise SystemExit(f"缺少交易日历：{spy}")
+    rate = per_minute or settings.massive_per_minute or 100
+    source = MassiveReference(key, base_url=massive_paid_base_url(settings), per_minute=rate)
+    members = CsvUniverseProvider(settings.exploration_universe_file).load()
+    tickers = [m.symbol for m in members if m.role is Role.SIGNAL_TARGET]
+    queries = list_queries()
+    return VerifyMassiveRelayService(
+        source=source,
+        store=_host_checked(
+            lambda: MassiveVerifyFiles(settings.massive_paid_dir, source.source_host)
+        ),
+        calendar=read_calendar(spy),
+        tickers=tickers,
+        tiingo_prices=read_tiingo_prices(settings.raw_data_dir, tickers),
+        official_lists=read_official_snapshots(settings.massive_probe_dir, queries),
+        clock=time.monotonic,
+        progress=progress,
+        queries=queries,
     )

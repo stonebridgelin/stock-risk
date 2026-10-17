@@ -86,6 +86,9 @@ class Settings:
     # Massive 付费档（T08d-2b 第 0.2 节）：密钥 MASSIVE_ADVANCED_API_KEY；
     # 付费档命令只用此项，不回退到免费档密钥
     massive_advanced_api_key: Secret = field(default_factory=lambda: Secret(""), repr=False)
+    # 付费档主机（T08d-2c）：MASSIVE_ADVANCED_BASE_URL，只对付费档命令生效；
+    # 取值由 bootstrap.massive_paid_base_url 检查（只允许官方主机与中转服务）
+    massive_advanced_base_url: str = ""
 
     @property
     def massive_probe_dir(self) -> Path:
@@ -167,4 +170,5 @@ def load_settings(project_root: Path = PROJECT_ROOT) -> Settings:
         massive_api_key=Secret(get("MASSIVE_API_KEY")),
         massive_per_minute=get_int("MASSIVE_PER_MINUTE"),
         massive_advanced_api_key=Secret(get("MASSIVE_ADVANCED_API_KEY")),
+        massive_advanced_base_url=get("MASSIVE_ADVANCED_BASE_URL").strip(),
     )

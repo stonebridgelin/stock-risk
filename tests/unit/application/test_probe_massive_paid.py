@@ -401,7 +401,7 @@ LISTS = [
 def svc(out: Path, src: FakeSource, logs: list[str]) -> ProbeMassivePaidService:
     return ProbeMassivePaidService(
         src,
-        MassivePaidFiles(out),
+        MassivePaidFiles(out, "api.massive.com"),
         calendar=[D(2014, 6, 6), D(2014, 6, 9)],
         tiingo_prices={"MSFT": [ReferenceBar(D(2014, 6, 6), 700.0, 100.0)]},
         tiingo_actions={"MSFT": [ReferenceAction(D(2014, 6, 9), "split", 7.0)]},

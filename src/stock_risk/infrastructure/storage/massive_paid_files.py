@@ -11,12 +11,14 @@ samples.csv                    第 3 节抽样
 summary.json                   汇总
 
 另提供交易日历（data/raw/SPY.csv）与 Tiingo 原始价、公司行动（data/raw_selection/）的读取。
+来源记录（T08d-2c）：每个 CSV 末尾加 source_host 列，
+_progress.json 与 summary.json 带 source_host 键；
+目录中已有其他主机的记录时，构造时拒绝（见 massive_source_host）。
 """
 
 from __future__ import annotations
 
 import csv
-import json
 from collections.abc import Mapping, Sequence
 from datetime import date
 from pathlib import Path
@@ -30,7 +32,12 @@ from stock_risk.domain.massive_paid import (
     ReferenceBar,
     Split,
 )
-from stock_risk.infrastructure.storage.massive_probe_files import MassiveProbeFiles, write_csv
+from stock_risk.infrastructure.storage.massive_probe_files import MassiveProbeFiles
+from stock_risk.infrastructure.storage.massive_source_host import (
+    check_source_host,
+    write_host_csv,
+    write_host_json,
+)
 
 BAR_COLUMNS = ["date", "open", "high", "low", "close", "volume", "vwap", "trades"]
 SPLIT_COLUMNS = ["execution_date", "split_from", "split_to", "adjustment_type"]
@@ -95,17 +102,22 @@ def _read(path: Path) -> list[dict[str, str]]:
 
 
 class MassivePaidFiles:
-    def __init__(self, out_dir: Path) -> None:
+    def __init__(self, out_dir: Path, source_host: str) -> None:
+        check_source_host(out_dir, source_host)
         self._dir = out_dir
+        self._host = source_host
         self._progress = MassiveProbeFiles(out_dir)  # 进度文件的读写与 T08d-2a 相同
         for sub in ("aggs", "actions", "lists"):
             (out_dir / sub).mkdir(parents=True, exist_ok=True)
+
+    def _write(self, path: Path, columns: Sequence[str], rows: Sequence[Mapping[str, Any]]) -> None:
+        write_host_csv(path, columns, rows, self._host)
 
     def load_progress(self) -> dict[str, Any]:
         return self._progress.load_progress()
 
     def save_progress(self, progress: Mapping[str, Any]) -> None:
-        self._progress.save_progress(progress)
+        self._progress.save_progress({**progress, "source_host": self._host})
 
     # ---- 日线 ----
 
@@ -126,7 +138,7 @@ class MassivePaidFiles:
             }
             for b in bars
         ]
-        write_csv(self._bars_path(ticker, kind), BAR_COLUMNS, rows)
+        self._write(self._bars_path(ticker, kind), BAR_COLUMNS, rows)
 
     def load_bars(self, ticker: str, kind: str) -> list[Bar]:
         return [
@@ -148,7 +160,7 @@ class MassivePaidFiles:
     def save_actions(
         self, ticker: str, splits: Sequence[Split], dividends: Sequence[Dividend]
     ) -> None:
-        write_csv(
+        self._write(
             self._dir / "actions" / f"{ticker}_splits.csv",
             SPLIT_COLUMNS,
             [
@@ -161,7 +173,7 @@ class MassivePaidFiles:
                 for s in splits
             ],
         )
-        write_csv(
+        self._write(
             self._dir / "actions" / f"{ticker}_dividends.csv",
             DIVIDEND_COLUMNS,
             [
@@ -209,7 +221,7 @@ class MassivePaidFiles:
     # ---- 清单 ----
 
     def save_list(self, key: str, rows: Sequence[Mapping[str, Any]]) -> None:
-        write_csv(self._dir / "lists" / f"lists_{key}.csv", LIST_COLUMNS, rows)
+        self._write(self._dir / "lists" / f"lists_{key}.csv", LIST_COLUMNS, rows)
 
     def load_list(self, key: str) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
@@ -231,13 +243,13 @@ class MassivePaidFiles:
         paths: list[Path] = []
         for key, rows in sorted(labels.items()):
             p = self._dir / "lists" / f"labels_{key}.csv"
-            write_csv(p, LABEL_COLUMNS, rows)
+            self._write(p, LABEL_COLUMNS, rows)
             paths.append(p)
         p = self._dir / "samples.csv"
-        write_csv(p, SAMPLE_COLUMNS, samples)
+        self._write(p, SAMPLE_COLUMNS, samples)
         paths.append(p)
         p = self._dir / "summary.json"
-        p.write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", "utf-8")
+        write_host_json(p, summary, self._host)
         paths.append(p)
         return [str(x) for x in paths]
 

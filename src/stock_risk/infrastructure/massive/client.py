@@ -3,7 +3,9 @@
 - All Tickers `/v3/reference/tickers`（分页用 next_url）与
   Ticker Overview `/v3/reference/tickers/{ticker}`；
 - 认证：请求头 `Authorization: Bearer <key>`（Massive 文档 quickstart），密钥不进 URL；
-  next_url 中若带 apiKey 参数一律去掉，且只接受 api.massive.com 的 https 地址；
+  next_url 中若带 apiKey 参数一律去掉，且只接受与本实例主机相同的 https 地址；
+- 主机（T08d-2c）：默认 api.massive.com；付费档可配置为中转服务 relaynex.vip，只允许这两个取值。
+  一个实例只连一个主机，密钥只发往该主机；用哪个主机、哪个密钥由 bootstrap 决定；
 - 日志、异常信息中不出现 URL 与密钥；服务端错误原文中若出现密钥也替换为 ***；
 - 限频：默认每分钟 5 次（免费档），两次请求最小间隔 60 / 上限 秒；遇 429 退避（60 秒 × 次数），
   连续 3 次 429 抛 RateLimitError；
@@ -33,6 +35,8 @@ from stock_risk.domain.massive_probe import ListQuery, check_query_date
 
 HOST = "api.massive.com"
 BASE_URL = f"https://{HOST}"
+RELAY_BASE_URL = "https://relaynex.vip"  # T08d-2c：第三方中转服务，只用于付费档
+ALLOWED_BASE_URLS = (BASE_URL, RELAY_BASE_URL)
 PAGE_LIMIT = 1000  # All Tickers 每页上限（文档）
 MAX_PAGES = 200  # 防止 next_url 循环
 
@@ -51,6 +55,7 @@ class MassiveReference:
         self,
         api_key: str,
         *,
+        base_url: str = BASE_URL,
         per_minute: int = 5,
         max_retries: int = 3,
         backoff_sec: float = 60.0,
@@ -62,6 +67,10 @@ class MassiveReference:
             raise ValueError("缺少 MASSIVE_API_KEY")
         if per_minute < 1:
             raise ValueError("per_minute 必须为正整数")
+        if base_url not in ALLOWED_BASE_URLS:
+            raise ValueError("Massive 主机只允许 https://api.massive.com 或 https://relaynex.vip")
+        self._base = base_url
+        self._host = urllib.parse.urlsplit(base_url).hostname or ""
         self._key = api_key
         self._min_interval = 60.0 / per_minute
         self._max_retries = max_retries
@@ -71,6 +80,11 @@ class MassiveReference:
         self._clock = clock
         self._last: float | None = None
         self._requests = 0
+
+    @property
+    def source_host(self) -> str:
+        """本实例连接的主机（写入付费档的来源记录）。"""
+        return self._host
 
     @property
     def request_count(self) -> int:
@@ -98,7 +112,7 @@ class MassiveReference:
             "sort": "ticker",
         }
         qs = urllib.parse.urlencode({k: v for k, v in params.items() if v is not None})
-        got = self._paginate(f"{BASE_URL}/v3/reference/tickers?{qs}", max_pages, "All Tickers")
+        got = self._paginate(f"{self._base}/v3/reference/tickers?{qs}", max_pages, "All Tickers")
         if got is None:
             raise QueryRejected(404, "not found")
         return got
@@ -114,7 +128,7 @@ class MassiveReference:
             f"{start.isoformat()}/{end.isoformat()}"
         )
         params = {"adjusted": "true" if adjusted else "false", "sort": "asc", "limit": "50000"}
-        url = f"{BASE_URL}{path}?{urllib.parse.urlencode(params)}"
+        url = f"{self._base}{path}?{urllib.parse.urlencode(params)}"
         return self._paginate(url, MAX_PAGES, "Aggregates")
 
     def splits(self, ticker: str, until: date) -> TickerPages:
@@ -140,7 +154,8 @@ class MassiveReference:
         return self._reference("/stocks/v1/dividends", params, "Dividends")
 
     def _reference(self, path: str, params: dict[str, str], what: str) -> TickerPages:
-        got = self._paginate(f"{BASE_URL}{path}?{urllib.parse.urlencode(params)}", MAX_PAGES, what)
+        url = f"{self._base}{path}?{urllib.parse.urlencode(params)}"
+        got = self._paginate(url, MAX_PAGES, what)
         if got is None:
             raise QueryRejected(404, "not found")
         return got
@@ -168,7 +183,7 @@ class MassiveReference:
     def overview(self, ticker: str, day: date) -> dict[str, Any] | None:
         check_query_date(day)
         path = f"/v3/reference/tickers/{urllib.parse.quote(ticker, safe='')}"
-        data = self._get(f"{BASE_URL}{path}?{urllib.parse.urlencode({'date': day.isoformat()})}")
+        data = self._get(f"{self._base}{path}?{urllib.parse.urlencode({'date': day.isoformat()})}")
         if data is None:
             return None
         results = data.get("results")
@@ -177,12 +192,12 @@ class MassiveReference:
     # ---- 内部 ----
 
     def _next(self, next_url: Any) -> str | None:
-        """next_url 只接受本主机的 https 地址；去掉其中可能带的 apiKey 参数。"""
+        """next_url 只接受本实例主机的 https 地址；去掉其中可能带的 apiKey 参数。"""
         if not next_url:
             return None
         parts = urllib.parse.urlsplit(str(next_url))
-        if parts.scheme != "https" or parts.hostname != HOST:
-            raise PriceSourceError("next_url 不是 api.massive.com 的 https 地址，停止")
+        if parts.scheme != "https" or parts.hostname != self._host:
+            raise PriceSourceError(f"next_url 不是 {self._host} 的 https 地址，停止")
         query = [
             (k, v)
             for k, v in urllib.parse.parse_qsl(parts.query, keep_blank_values=True)
