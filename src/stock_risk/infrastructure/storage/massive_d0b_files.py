@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
@@ -77,9 +78,31 @@ class Records:
     date_missing: list[dict[str, str]] = field(default_factory=list)
 
 
+_DATE_PREFIX = re.compile(r"^\d{4}-\d{2}-\d{2}")
+
+
+def _sealed_date(value: str) -> bool:
+    """能解析为日期（以 YYYY-MM-DD 开头）且晚于 2019-12-31。"""
+    if not _DATE_PREFIX.match(value):
+        return False
+    try:
+        return date.fromisoformat(value[:10]) > EXPLORATION_END
+    except ValueError:
+        return False
+
+
 def raw_copy(r: Mapping[str, Any]) -> dict[str, str]:
-    """缺日期的记录原文（标量字段），记入台账供 P3 处理。"""
-    return {k: text(v) for k, v in sorted(r.items()) if not isinstance(v, dict | list)}
+    """缺日期的记录原文（标量字段），记入台账供 P3 处理。
+
+    写入之前遮蔽封存期日期（P1-05）：凡能解析为日期且晚于 2019-12-31 的字段写为空，
+    字段名记入 masked_after_2019，与正常行的遮蔽规则一致。"""
+    out = {k: text(v) for k, v in sorted(r.items()) if not isinstance(v, dict | list)}
+    masked = [k for k, v in out.items() if _sealed_date(v)]
+    for k in masked:
+        out[k] = ""
+    if masked:
+        out["masked_after_2019"] = "|".join(masked)
+    return out
 
 
 def bar_records(results: Sequence[Mapping[str, Any]]) -> Records:

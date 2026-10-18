@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import csv
 import json
+import re
 import urllib.error
 import urllib.request
 from datetime import date
@@ -212,3 +213,37 @@ def test_currency_null_counted_as_missing(tmp_path: Path) -> None:
     (e,) = _ledger(tmp_path).values()
     assert e["currency_field_missing"] == 1
     assert [r["currency"] for r in _rows(tmp_path / "actions/AAA_dividends.csv")] == ["", "USD"]
+
+
+# ---- P1-05：缺日期记录的原文先遮蔽封存期日期，再写入台账 ----
+
+
+def test_missing_date_rows_mask_sealed_dates_in_ledger(tmp_path: Path) -> None:
+    fake = FakeMassive(
+        {
+            # 分红缺除息日，派息日 2020-01-10、公告日 2020-01-02（验收记录中的例子）
+            ("dividends", "AAA"): ok(
+                [
+                    '{"cash_amount":0.7,"dividend_type":"CD","currency":"USD",'
+                    '"declaration_date":"2020-01-02","record_date":"2019-12-27",'
+                    '"pay_date":"2020-01-10"}'
+                ]
+            ),
+            # 拆股缺执行日，另带 2020 年的日期字段
+            ("splits", "AAA"): ok(['{"split_from":1,"split_to":2,"announced_date":"2020-02-03"}']),
+        }
+    )
+    src = fake.source()
+    specs = [spec("AAA", c, START, END) for c in ("splits", "dividends")]
+    FetchMassiveD0bService(specs, HOST, lambda: MassiveD0bFiles(tmp_path, HOST), lambda: src).run()
+    text = (tmp_path / "_ledger.json").read_text("utf-8")
+    dates = re.findall(r"\d{4}-\d{2}-\d{2}", text)
+    assert dates  # 台账中确有日期（请求止日、登记日），检查不是空转
+    assert all(d <= "2019-12-31" for d in dates), dates  # 没有任何晚于 2019-12-31 的日期
+    entries = _ledger(tmp_path)
+    (div_row,) = entries[f"{HOST}|dividends|AAA||2019-12-31|"]["date_missing_rows"]
+    assert div_row["pay_date"] == "" and div_row["declaration_date"] == ""
+    assert div_row["record_date"] == "2019-12-27"  # 不晚于截止日的照留
+    assert set(div_row["masked_after_2019"].split("|")) == {"declaration_date", "pay_date"}
+    (split_row,) = entries[f"{HOST}|splits|AAA||2019-12-31|"]["date_missing_rows"]
+    assert split_row["announced_date"] == "" and split_row["masked_after_2019"] == "announced_date"
