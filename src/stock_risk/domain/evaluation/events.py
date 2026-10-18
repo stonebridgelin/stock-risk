@@ -18,6 +18,10 @@ from stock_risk.domain.evaluation.params import PEAK_WINDOW
 from stock_risk.domain.evaluation.series import EvalSeries
 from stock_risk.domain.numeric import InvalidInputError
 
+# 不在掩码内、又证明不了是预热的日子（T13-H1C 第 1.8 节）；
+# exclusion_reasons 加前缀为 UNEVALUABLE_UNKNOWN
+UNEVALUABLE_UNPROVEN = "UNKNOWN"
+
 
 @dataclass(frozen=True, slots=True)
 class _Segment:
@@ -112,11 +116,16 @@ def _unevaluable(segment: _Segment, p: int, trough: int | None) -> frozenset[str
     if trough is None:
         return frozenset()
     reasons: set[str] = set()
+    series = segment.series
     for i in range(segment.positions[p], segment.positions[trough] + 1):
-        if segment.series.bars[i] is None:
+        if series.bars[i] is None:
             reasons.add("MISSING")
-        elif not segment.series.mask[i]:
-            reasons.add("WARMUP")
+        elif not series.mask[i]:
+            # T13-H1C 第 1.8 节：预热要有证明——段内计数（含当日）不足掩码要求才记 WARMUP；
+            # 计数已足却不在掩码内的（今后新增的掩码排除原因），记 UNKNOWN，H1 分类归乙
+            reasons.add(
+                "WARMUP" if series.segment_counts[i] < series.mask_min else UNEVALUABLE_UNPROVEN
+            )
     return frozenset(reasons)
 
 
