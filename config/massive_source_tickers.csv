@@ -1,0 +1,5 @@
+# Massive 源代码映射（T12-D0b；只由 fetch-massive-d0b 与 build-canonical 读取，旧数据（Tiingo）路径不读）
+# 同一 symbol 的各行按顺序组成分段；from / to 为空表示不设该端边界。这里登记的 symbol 取代 symbol_segments.csv 中同一 symbol 的分段；未登记的仍按 symbol_segments.csv，再按默认（源代码 = symbol）
+# 每行必须有裁定编号（ruling）。修改本文件需同步 docs/develop_docs/02-数据获取.md
+symbol,source_ticker,from,to,ruling,note
+SONY,SNE,,,PM-D0b-01,"Sony ADR 的 NYSE 代码 2021-04-01 起由 SNE 改为 SONY；2008–2019 整段用 SNE（docs/reviews/2026-10-18_D0b裁定_SONY源代码映射.md）"
