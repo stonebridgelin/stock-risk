@@ -78,6 +78,22 @@ def _default_transport(req: urllib.request.Request) -> Any:
         return json.loads(resp.read().decode("utf-8"))
 
 
+def parse_json_keep_numbers(text: str) -> Any:
+    """解析响应正文，数字保留原文字符串（T12-D0b DBr-01）：首次解码时就不经过 float。"""
+    return json.loads(text, parse_float=str, parse_int=str)
+
+
+def make_transport(parse: Callable[[str], Any]) -> Transport:
+    """可注入响应解析方式的传输层（T12-D0b）：与默认传输层相同（同一 opener，不跟随重定向），
+    只把 json.loads 换成 parse。认证、分页主机检查与脱敏都不变。"""
+
+    def transport(req: urllib.request.Request) -> Any:
+        with _OPENER.open(req, timeout=60) as resp:  # 只请求固定主机
+            return parse(resp.read().decode("utf-8"))
+
+    return transport
+
+
 class MassiveReference:
     name = "Massive"
 

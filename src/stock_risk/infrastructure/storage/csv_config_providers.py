@@ -145,3 +145,43 @@ class CsvRawPriceCorrectionProvider:
 
     def sha256(self) -> str | None:
         return file_sha256(self._path)
+
+
+# ---- T12-D0b：Massive 源代码映射（PM-D0b-01） ----
+
+
+class CsvMassiveSourceTickerProvider:
+    """config/massive_source_tickers.csv：symbol,source_ticker,from,to,ruling,note。
+
+    只由 fetch-massive-d0b 与 build-canonical 读取；旧数据（Tiingo）路径不读。每行必须有裁定编号。
+    文件不存在视为没有登记。"""
+
+    def __init__(self, path: Path) -> None:
+        self._path = path
+
+    def load(self) -> dict[str, tuple[SymbolSegment, ...]]:
+        return {s: segs for s, (segs, _) in self.load_with_rulings().items()}
+
+    def load_with_rulings(self) -> dict[str, tuple[tuple[SymbolSegment, ...], str]]:
+        grouped: dict[str, list[SymbolSegment]] = {}
+        rulings: dict[str, set[str]] = {}
+        for r in _rows(self._path):
+            ruling = r.get("ruling", "")
+            if not ruling:
+                raise ValueError(f"{self._path.name}: {r.get('symbol')} 的映射没有裁定编号")
+            seg = SymbolSegment(
+                symbol=r["symbol"].upper(),
+                source_ticker=r["source_ticker"].upper(),
+                start=_day(r["from"]),
+                end=_day(r["to"]),
+                note=r.get("note", ""),
+            )
+            grouped.setdefault(seg.symbol, []).append(seg)
+            rulings.setdefault(seg.symbol, set()).add(ruling)
+        return {
+            s: (validate_segments(segs), "、".join(sorted(rulings[s])))
+            for s, segs in grouped.items()
+        }
+
+    def sha256(self) -> str | None:
+        return file_sha256(self._path)

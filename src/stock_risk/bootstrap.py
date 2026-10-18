@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable, Sequence
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 from stock_risk.application.audit_raw_data import AuditRawDataService
@@ -13,11 +13,28 @@ from stock_risk.application.build_canonical import (
     CanonicalConfig,
     build_canonical,
 )
-from stock_risk.application.check_calendar import CheckCalendarService
+from stock_risk.application.check_calendar import (
+    CHECK_END,
+    CHECK_START,
+    CheckCalendarService,
+    compare_calendars,
+)
 from stock_risk.application.compare.service import CompareService
+from stock_risk.application.d0b_inventory import (
+    RANGE_END,
+    compare_mapping,
+    determine_identity,
+    gap_specs,
+    resolve_segments,
+)
 from stock_risk.application.fetch_batch import BatchItem, FetchBatchService, QuotaLimits
+from stock_risk.application.fetch_massive_d0b import (
+    RELAY_HOST,
+    FetchMassiveD0bService,
+    RequestSpec,
+)
 from stock_risk.application.fetch_raw_data import FetchRawDataService
-from stock_risk.application.market_data_loader import MarketDataLoader
+from stock_risk.application.market_data_loader import CALENDAR_SYMBOL, MarketDataLoader
 from stock_risk.application.probe_massive import ProbeMassiveService
 from stock_risk.application.probe_massive_followup import ProbeMassiveFollowupService
 from stock_risk.application.probe_massive_paid import ProbeMassivePaidService
@@ -27,7 +44,7 @@ from stock_risk.application.replay import ReplayService
 from stock_risk.application.replay_run import ReplayRunService
 from stock_risk.application.show_ranges import ShowRangesService
 from stock_risk.application.verify_massive_relay import VerifyMassiveRelayService
-from stock_risk.config.settings import Settings
+from stock_risk.config.settings import Settings, load_settings
 from stock_risk.domain.massive_paid import COMPARE_TICKERS
 from stock_risk.domain.massive_probe import list_queries
 from stock_risk.domain.universe import Role, UniverseMember
@@ -35,7 +52,12 @@ from stock_risk.domain.universe_probe import CoverageRequest
 from stock_risk.infrastructure.calendars.xnys import ExchangeCalendarsXnys
 from stock_risk.infrastructure.massive.client import ALLOWED_BASE_URLS as MASSIVE_ALLOWED_BASE_URLS
 from stock_risk.infrastructure.massive.client import BASE_URL as MASSIVE_BASE_URL
-from stock_risk.infrastructure.massive.client import MassiveReference
+from stock_risk.infrastructure.massive.client import RELAY_BASE_URL as MASSIVE_RELAY_BASE_URL
+from stock_risk.infrastructure.massive.client import (
+    MassiveReference,
+    make_transport,
+    parse_json_keep_numbers,
+)
 from stock_risk.infrastructure.replay.compare_files import CompareFileSink
 from stock_risk.infrastructure.replay.environment import LocalRunEnvironment
 from stock_risk.infrastructure.replay.files import ReplayFileSink
@@ -46,6 +68,7 @@ from stock_risk.infrastructure.storage.canonical_store import CanonicalFileSink
 from stock_risk.infrastructure.storage.csv_config_providers import (
     CsvAdjustmentVerificationProvider,
     CsvListingPeriodProvider,
+    CsvMassiveSourceTickerProvider,
     CsvPriceCorrectionProvider,
     CsvRawPriceCorrectionProvider,
     CsvSegmentProvider,
@@ -57,7 +80,17 @@ from stock_risk.infrastructure.storage.csv_raw_repository import (
     confirmed_no_data,
 )
 from stock_risk.infrastructure.storage.csv_universe_provider import CsvUniverseProvider
+from stock_risk.infrastructure.storage.d0b_files import (
+    read_gaps,
+    read_identity,
+    read_verify_evidence,
+    write_calendar,
+    write_compare,
+    write_gaps,
+    write_identity,
+)
 from stock_risk.infrastructure.storage.fetch_batch_files import JsonQuotaStore, read_batch_list
+from stock_risk.infrastructure.storage.massive_d0b_files import MassiveD0bFiles
 from stock_risk.infrastructure.storage.massive_followup_files import (
     MassiveFollowupFiles,
     read_reference_spans,
@@ -395,17 +428,30 @@ def run_build_canonical(
     project_root: Path,
     args: dict[str, object],
 ) -> BuildSummary:
-    """规范数据版本的构建（T11-D0a 第 7 节）。只在测试的临时目录上运行，不生成正式数据。"""
+    """规范数据版本的构建（T11-D0a 第 7 节；T12-D0b 第 2.6 节的完整性、上市期间、日历三项）。
+
+    源代码映射：config/massive_source_tickers.csv 优先，其次 symbol_segments.csv，最后默认
+    （d0b_inventory.resolve_segments，与补取命令同一规则）。"""
     verifications = CsvAdjustmentVerificationProvider(config_dir / "adjustment_verifications.csv")
     raw_corrections = CsvRawPriceCorrectionProvider(config_dir / "raw_price_corrections.csv")
+    massive_tickers = CsvMassiveSourceTickerProvider(config_dir / "massive_source_tickers.csv")
+    symbol_segments = CsvSegmentProvider(config_dir / "symbol_segments.csv").load()
+    overrides = massive_tickers.load()
+    listing_path = config_dir / "listing_periods.csv"
     config = CanonicalConfig(
         calendar=read_calendar_file(calendar_file),
-        segments=CsvSegmentProvider(config_dir / "symbol_segments.csv").load(),
+        segments={
+            s.upper(): resolve_segments(s.upper(), symbol_segments, overrides)
+            for s in [*symbols, *symbol_segments, *overrides]
+        },
         verifications=verifications.load(),
         verifications_sha256=verifications.sha256(),
         raw_corrections=raw_corrections.load(),
         raw_corrections_sha256=raw_corrections.sha256(),
         price_corrections_sha256=file_sha256(config_dir / "price_corrections.csv"),
+        listings=CsvListingPeriodProvider(listing_path).load(),
+        listing_periods_sha256=file_sha256(listing_path),
+        massive_source_tickers_sha256=massive_tickers.sha256(),
     )
     return build_canonical(
         symbols,
@@ -416,3 +462,124 @@ def run_build_canonical(
         clock=lambda: datetime.now(UTC),
         args=args,
     )
+
+
+# ---- T12-D0b P1：盘点、日历与补取 ----
+
+D0B_OUTPUT = Path("output") / "d0b"
+D0B_DOWNLOAD = Path("data") / "massive_d0b" / "download"
+D0B_VERIFY_DIR = Path("data") / "massive_probe" / "paid" / "verify"
+D0B_GAP_REASONS = {
+    "raw": "已有文件的进度记录没有请求参数与文件哈希（第 2.2 节条件 2、6），不复用",
+    "adj": "已有文件的进度记录没有请求参数与文件哈希（第 2.2 节条件 2、6），不复用；只作诊断",
+    "splits": "已有文件的进度记录没有请求参数与文件哈希（第 2.2 节条件 2、6），不复用",
+    "dividends": "分红一律重新下载（DB-06）",
+}
+
+
+def xnys_sessions(start: date, end: date) -> tuple[date, ...]:
+    return ExchangeCalendarsXnys().sessions(start, end)
+
+
+def run_d0b_calendar(project_root: Path, out_file: Path, raw_dir: Path) -> dict[str, object]:
+    """第 2.5 节：XNYS 交易日（2008-01-01 至 2019-12-31）写入 out_file，并与现有 SPY 日历代理核对。
+
+    不联网；不读设置（.env）。SPY 代理经现有统一取数入口读取 raw_dir/SPY.csv。"""
+    xnys = ExchangeCalendarsXnys()
+    days = xnys.sessions(CHECK_START, RANGE_END)  # 2008-01-01 为假日，库要求起点是交易日
+    sha = write_calendar(out_file, days)
+    loader = MarketDataLoader(CsvRawDataReader(raw_dir), _Empty(), _Empty())
+    proxy = loader.calendar().days
+    only_proxy, only_ref = compare_calendars(proxy, days, CHECK_START, CHECK_END)
+    return {
+        "file": out_file,
+        "sha256": sha,
+        "library": f"{xnys.library} {xnys.version}",
+        "days": len(days),
+        "first": days[0],
+        "last": days[-1],
+        "only_in_spy": only_proxy,
+        "only_in_xnys": only_ref,
+        "spy_sha256": loader.reader.daily_file_hashes().get(f"{CALENDAR_SYMBOL}.csv"),
+    }
+
+
+class _Empty:
+    def load(self) -> dict[str, object]:
+        return {}
+
+
+def run_d0b_inventory(project_root: Path, out_dir: Path) -> dict[str, object]:
+    """第 2.1、2.2、2.7 节：身份清单、缺口清单与映射比较，写入 out_dir。不联网，不读设置。"""
+    config = project_root / "config"
+    members = [
+        m
+        for m in CsvUniverseProvider(config / "universe_exploration.csv").load()
+        if m.role is Role.SIGNAL_TARGET
+    ]
+    listings = CsvListingPeriodProvider(config / "listing_periods.csv").load()
+    symbol_segments = CsvSegmentProvider(config / "symbol_segments.csv").load()
+    massive = CsvMassiveSourceTickerProvider(config / "massive_source_tickers.csv")
+    evidence = read_verify_evidence(project_root / D0B_VERIFY_DIR, [m.symbol for m in members])
+    calendar = xnys_sessions(CHECK_START, RANGE_END)
+    identity = determine_identity(
+        members, evidence, listings, massive.load_with_rulings(), calendar
+    )
+    compare = compare_mapping(identity, symbol_segments, massive.load(), listings)
+    specs = gap_specs(identity)
+    paths = [
+        write_identity(out_dir / "identity.csv", identity),
+        write_compare(out_dir / "mapping_compare.csv", compare),
+        write_gaps(out_dir / "gaps.csv", specs, D0B_GAP_REASONS),
+    ]
+    return {"identity": identity, "compare": compare, "specs": specs, "paths": paths}
+
+
+def _check_gaps_against_identity(specs: Sequence[RequestSpec], identity_path: Path) -> None:
+    identity = read_identity(identity_path)
+    for s in specs:
+        row = identity.get(s.symbol)
+        seg = f"{s.ticker}:{s.start.isoformat()}~{s.end.isoformat()}"
+        if row is None or seg not in row["segments"].split("|"):
+            raise SystemExit(f"缺口 {s.symbol} {seg} 与身份清单 {identity_path} 不符，停止")
+
+
+def build_fetch_massive_d0b_service(
+    *,
+    identity_path: Path,
+    gaps_path: Path,
+    out_dir: Path,
+    dry_run: bool,
+    per_minute: int | None = None,
+    progress: ProgressFn = quiet,
+) -> FetchMassiveD0bService:
+    """补取命令（第 2.3 节）。--dry-run 不读设置（.env）、不构造数据源、不联网。
+
+    正式运行：密钥只用 MASSIVE_ADVANCED_API_KEY；主机必须是 MASSIVE_ADVANCED_BASE_URL = https://relaynex.vip。
+    响应以保留数字原文的方式解析（client.parse_json_keep_numbers）。"""
+    specs = read_gaps(gaps_path)
+    _check_gaps_against_identity(specs, identity_path)
+    host = RELAY_HOST
+
+    def store() -> MassiveD0bFiles:
+        return _host_checked(lambda: MassiveD0bFiles(out_dir, host))
+
+    source_factory = None
+    if not dry_run:
+
+        def source_factory() -> MassiveReference:
+            settings = load_settings()
+            base = massive_paid_base_url(settings)
+            if base != MASSIVE_RELAY_BASE_URL:
+                raise SystemExit(
+                    f"D0b 补取只经中转服务 {MASSIVE_RELAY_BASE_URL}；当前主机设置不是它"
+                )
+            rate = per_minute or settings.massive_per_minute or 100
+            return MassiveReference(
+                massive_paid_key(settings),
+                base_url=base,
+                per_minute=rate,
+                transport=make_transport(parse_json_keep_numbers),
+            )
+
+    return FetchMassiveD0bService(specs, host, store, source_factory, progress)

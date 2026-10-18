@@ -10,6 +10,8 @@
   _assumptions.csv        每个假设实例一行
   _issues.csv             每个问题一行
   _dataset.json           数据版本的全部输入；不含版本号字段
+  _calendar.csv          构建所用的交易日历（一列 date；T12-D0b 第 2.6 节第 3 项），
+                          规范模式的读取器从这里取日历
   MANIFEST.sha256         上述全部文件的哈希（不含它自己与 _build_meta.json）
   _build_meta.json        开始、结束时间与命令行参数；不在清单与逐字节确定性比较之内
 
@@ -24,6 +26,7 @@ import io
 import json
 import shutil
 from collections.abc import Iterable, Sequence
+from datetime import date
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -59,6 +62,7 @@ from stock_risk.infrastructure.storage.csv_raw_repository import BAR_COLUMNS
 BUILD_META_FILE = "_build_meta.json"
 ASSUMPTIONS_FILE = "_assumptions.csv"
 ISSUES_FILE = "_issues.csv"
+CALENDAR_FILE = "_calendar.csv"
 DIAGNOSTIC_STATUS = "复权未完成"
 DATASET_FIELDS = (
     "spec_version",
@@ -184,6 +188,9 @@ def render_files(output: CanonicalOutput) -> dict[str, bytes]:
     files[ASSUMPTIONS_FILE] = _csv(ASSUMPTION_COLUMNS, assumption_rows)
     files[ISSUES_FILE] = _csv(ISSUE_COLUMNS, issue_rows)
     files[DATASET_FILE] = (output.dataset_text + "\n").encode("utf-8")
+    if output.calendar_days:
+        # 实际使用的交易日（封存期行已在读取时跳过），内容与 _dataset.json 的日历哈希对应
+        files[CALENDAR_FILE] = _csv(["date"], ([d.isoformat()] for d in output.calendar_days))
     return files
 
 
@@ -279,6 +286,14 @@ class CanonicalDataReader:
     def dataset_sha256(self) -> str:
         return self._dataset_sha256
 
+    def calendar_days(self) -> tuple[date, ...]:
+        """规范模式的交易日历：版本目录中的 _calendar.csv（不从 SPY 日线生成）。"""
+        path = self._root / CALENDAR_FILE
+        if not path.exists():
+            raise CanonicalModeError(f"{self._root}: 没有 {CALENDAR_FILE}")
+        with path.open(encoding="utf-8", newline="") as f:
+            return tuple(date.fromisoformat(r["date"]) for r in csv.DictReader(f))
+
     def identity(self) -> dict[str, str | None]:
         """运行清单记录的数据身份（第 7.4 节）。"""
         return {
@@ -338,3 +353,36 @@ def open_market_reader(root: Path) -> CsvRawDataReader | CanonicalDataReader:
     if (root / DATASET_FILE).exists():
         return CanonicalDataReader(root)
     return CsvRawDataReader(root)
+
+
+# ---- 独立审计路径：读取复权日志（T12-D0b 第 2.6 节第 2 项，DBr-02） ----
+
+
+def _decode(node: object) -> object:
+    """semantic_digest.canonical 的 JSON → 普通 Python 结构（数据类为字段字典，日期为 date）。"""
+    if isinstance(node, dict):
+        if "dc" in node:
+            return {k: _decode(v) for k, v in node["fields"]}  # type: ignore[index]
+        if "map" in node:
+            return {_decode(k): _decode(v) for k, v in node["map"]}  # type: ignore[index]
+        if "tuple" in node or "list" in node:
+            return [_decode(v) for v in node.get("tuple", node.get("list"))]  # type: ignore[union-attr]
+        if "date" in node:
+            return date.fromisoformat(node["date"])
+        if "enum" in node:
+            return str(node["enum"]).rsplit(".", 1)[1]
+        if "i" in node:
+            return int(node["i"])
+        if "d" in node:
+            return Decimal(node["d"])
+        if "f" in node:
+            return float.fromhex(node["f"])
+    return node
+
+
+def read_adjustment_log(root: Path, symbol: str) -> dict[str, object]:
+    """版本目录中 <SYMBOL>.adjlog.json 的内容（原始行动表、计算组表等）。不经过信号读取路径。"""
+    data = json.loads((root / f"{symbol}.adjlog.json").read_text("utf-8"))
+    out = _decode(data)
+    assert isinstance(out, dict)
+    return out

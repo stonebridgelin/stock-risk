@@ -152,8 +152,24 @@ def make_inputs(base: Path) -> tuple[Path, Path, Path]:
     return massive, cal, cfg
 
 
+def write_status(massive: Path) -> None:
+    """输入快照的 INPUTS_STATUS.json（T12-D0b 第 2.6 节第 1 项）。
+
+    目录中的每个输入文件都登记为成功且完整。"""
+    files = {
+        p.relative_to(massive).as_posix(): {
+            "status": "ok",
+            "complete": True,
+            "sha256": hashlib.sha256(p.read_bytes()).hexdigest(),
+        }
+        for p in sorted([*massive.glob("aggs/*_raw.csv"), *massive.glob("actions/*.csv")])
+    }
+    (massive / "INPUTS_STATUS.json").write_text(json.dumps({"files": files}), "utf-8")
+
+
 def build(base: Path, out: Path, symbols=("SPY", "AAA", "BBB")):  # noqa: ANN001, ANN201
     massive, cal, cfg = base / "massive", base / "calendar.csv", base / "config"
+    write_status(massive)
     return run_build_canonical(
         massive_dir=massive,
         calendar_file=cal,
@@ -332,6 +348,7 @@ def test_b21_version_identity(tmp_path: Path) -> None:
     # 日历比本证券的日线多出两个交易日（2015-05-01、05-04），它们与本证券无关
     calendar = replace(full, rows=(*full.rows, date(2015, 5, 1), date(2015, 5, 4)))
     config = CanonicalConfig(calendar, {}, (), None, (), None, None)
+    write_status(massive)
     source = MassiveCanonicalSource(massive)
 
     def version(cfg_: CanonicalConfig, gaps: tuple[int, ...] = (10, 20)) -> str:

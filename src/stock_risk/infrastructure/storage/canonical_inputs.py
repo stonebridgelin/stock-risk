@@ -14,10 +14,11 @@ from __future__ import annotations
 import csv
 import hashlib
 import io
+import json
 from datetime import date
 from pathlib import Path
 
-from stock_risk.application.build_canonical import TextInput
+from stock_risk.application.build_canonical import CanonicalBuildError, TextInput
 from stock_risk.domain.adjustment.inputs import (
     DividendInput,
     SplitInput,
@@ -137,17 +138,57 @@ def read_calendar(path: Path) -> TextInput[date]:
     return TextInput(tuple(days), sealed, sha, f"calendar:{path.name}")
 
 
+INPUTS_STATUS_FILE = "INPUTS_STATUS.json"
+
+
 class MassiveCanonicalSource:
-    """实现 build_canonical.CanonicalInputSource：从 Massive 付费数据目录读原文。"""
+    """实现 build_canonical.CanonicalInputSource：从冻结的输入快照读原文
+    （T12-D0b 第 2.6 节第 1 项）。
+
+    快照中必须有 INPUTS_STATUS.json，格式：
+        {"files": {"aggs/<T>_raw.csv": {"status": "ok", "complete": true, "sha256": "...", ...},
+                   "actions/<T>_splits.csv": {...}, "actions/<T>_dividends.csv": {...}}}
+    任何一个文件（原始日线、拆股、分红）没有登记、不是"成功且完整"、文件缺失或哈希不符，
+    都抛 CanonicalBuildError 停止构建，不得把缺失读成空。
+    合法的空行动（成功、完整、零条，文件只有表头）正常。
+    """
 
     def __init__(self, root: Path) -> None:
         self._root = root
+        path = root / INPUTS_STATUS_FILE
+        if not path.exists():
+            raise CanonicalBuildError(f"输入快照中没有 {INPUTS_STATUS_FILE}：{root}")
+        data = path.read_bytes()
+        self._status_sha256 = hashlib.sha256(data).hexdigest()
+        parsed = json.loads(data.decode("utf-8"))
+        files = parsed.get("files") if isinstance(parsed, dict) else None
+        if not isinstance(files, dict):
+            raise CanonicalBuildError(f"{INPUTS_STATUS_FILE} 格式不对：缺少 files")
+        self._files: dict[str, dict[str, object]] = files
+
+    def _checked[T](self, rel: str, got: TextInput[T]) -> TextInput[T]:
+        entry = self._files.get(rel)
+        if entry is None:
+            raise CanonicalBuildError(f"{rel}: {INPUTS_STATUS_FILE} 中没有登记")
+        if entry.get("status") != "ok" or entry.get("complete") is not True:
+            raise CanonicalBuildError(f"{rel}: 请求不是成功且完整（{entry.get('status')}）")
+        if got.sha256 is None:
+            raise CanonicalBuildError(f"{rel}: 文件缺失")
+        if got.sha256 != entry.get("sha256"):
+            raise CanonicalBuildError(f"{rel}: 文件哈希与 {INPUTS_STATUS_FILE} 不符")
+        return got
 
     def bars(self, ticker: str) -> TextInput[RawBarText]:
-        return read_massive_bars(self._root, ticker)
+        return self._checked(f"aggs/{ticker}_raw.csv", read_massive_bars(self._root, ticker))
 
     def splits(self, ticker: str) -> TextInput[SplitInput]:
-        return read_massive_splits(self._root, ticker)
+        return self._checked(
+            f"actions/{ticker}_splits.csv", read_massive_splits(self._root, ticker)
+        )
 
     def dividends(self, ticker: str) -> TextInput[DividendInput]:
-        return read_massive_dividends(self._root, ticker)
+        rel = f"actions/{ticker}_dividends.csv"
+        return self._checked(rel, read_massive_dividends(self._root, ticker))
+
+    def status_sha256(self) -> str | None:
+        return self._status_sha256

@@ -121,11 +121,17 @@ class MarketDataLoader:
         return parse_history(symbol, text.bars, text.actions)
 
     def calendar(self) -> TradingCalendar:
-        """交易日历代理：SPY 文件全部日线的日期（经第 ①、② 步）。"""
+        """交易日历。旧数据：SPY 文件全部日线的日期（经第 ①、② 步，日历代理）。
+        规范数据（T12-D0b 第 2.6 节第 3 项）：版本目录中的 _calendar.csv，不从 SPY 生成。"""
         if self._calendar is None:
-            self._calendar = TradingCalendar.from_days(
-                b.day for b in self._parsed(CALENDAR_SYMBOL).bars
-            )
+            if self._canonical:
+                days = self._reader.calendar_days()  # type: ignore[attr-defined]
+                assert_no_sealed_days(days, "_calendar.csv")
+                self._calendar = TradingCalendar.from_days(days)
+            else:
+                self._calendar = TradingCalendar.from_days(
+                    b.day for b in self._parsed(CALENDAR_SYMBOL).bars
+                )
         return self._calendar
 
     def load(self, symbol: str, corrected: bool = True) -> ObservedData:

@@ -4,6 +4,8 @@
 - 凡会改变输出的输入，都写入 _dataset.json：规格版本、裁决文件、参数（含 G 集合与 ATR 窗口）、
   交易日历内容哈希与起止日、证券身份与拼接、各输入文件哈希与封存行计数、配置文件哈希、代码提交号。
 - 输出目录已存在的，拒绝写入（不覆盖、不合并）。
+- T12-D0b 第 2.6 节：输入快照的 INPUTS_STATUS.json 哈希、上市期间截取（listing_clipped）与
+  上市期间配置、源代码映射配置的哈希进入 _dataset.json；所用交易日历写入版本目录的 _calendar.csv。
 - 本卡只在测试的临时目录上运行，不生成正式数据。
 """
 
@@ -17,6 +19,7 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Protocol
 
+from stock_risk.application.d0b_inventory import effective_range
 from stock_risk.domain.adjustment import AdjustmentParams, compute_canonical
 from stock_risk.domain.adjustment.inputs import DividendInput, SplitInput, Verification
 from stock_risk.domain.adjustment.model import (
@@ -28,6 +31,7 @@ from stock_risk.domain.adjustment.params import RULING_FILE, UNREGISTERED_GAP_BR
 from stock_risk.domain.corrections import RawPriceCorrection
 from stock_risk.domain.evaluation.params import ATR_PERIOD
 from stock_risk.domain.lifecycle.params import GRID_DIMENSIONS, REFERENCE_NUMERIC
+from stock_risk.domain.listing import ListingPeriod
 from stock_risk.domain.raw_text import RawBarText
 from stock_risk.domain.segments import SymbolSegment
 
@@ -55,6 +59,10 @@ class CanonicalInputSource(Protocol):
 
     def dividends(self, ticker: str) -> TextInput[DividendInput]: ...
 
+    def status_sha256(self) -> str | None:
+        """输入快照 INPUTS_STATUS.json 的哈希（T12-D0b 第 2.6 节第 1 项）；没有时为 None。"""
+        ...
+
 
 @dataclass(frozen=True, slots=True)
 class CanonicalConfig:
@@ -65,6 +73,10 @@ class CanonicalConfig:
     raw_corrections: tuple[RawPriceCorrection, ...]
     raw_corrections_sha256: str | None
     price_corrections_sha256: str | None
+    # T12-D0b 第 2.6 节第 2 项：上市期间截取（未登记的证券按 2008-01-01 至 2019-12-31）
+    listings: Mapping[str, ListingPeriod] = field(default_factory=dict)
+    listing_periods_sha256: str | None = None
+    massive_source_tickers_sha256: str | None = None  # PM-D0b-01 的源代码映射配置
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,6 +87,7 @@ class CanonicalOutput:
     results: tuple[AdjustmentResult, ...]
     unrelated_verification_ids: tuple[str, ...]
     meta: dict[str, Any]
+    calendar_days: tuple[date, ...] = ()  # 写入版本目录的 _calendar.csv（T12-D0b 第 2.6 节第 3 项）
 
 
 class CanonicalSink(Protocol):
@@ -150,8 +163,13 @@ class _SecurityInputs:
 
 
 def _gather(
-    symbol: str, segments: tuple[SymbolSegment, ...], source: CanonicalInputSource
+    symbol: str,
+    segments: tuple[SymbolSegment, ...],
+    source: CanonicalInputSource,
+    listing: ListingPeriod | None,
 ) -> _SecurityInputs:
+    """先按代码分段过滤各段的源文件，再对合并后的日线与行动按 effective_range 截取（G-D0b-02）；
+    截取数在分段过滤之后统计。行动按原始除权日截取。"""
     bars: list[RawBarText] = []
     splits: list[SplitInput] = []
     dividends: list[DividendInput] = []
@@ -189,9 +207,22 @@ def _gather(
                 },
             }
         )
-    bars.sort(key=lambda r: r.day)
+    lo, hi = effective_range(listing)
+    kept_bars = [r for r in bars if lo <= r.day <= hi]
+    kept_splits = [r for r in splits if lo <= r.ex_date <= hi]
+    kept_divs = [r for r in dividends if lo <= r.ex_date <= hi]
+    clipped = {
+        "bars": len(bars) - len(kept_bars),
+        "splits": len(splits) - len(kept_splits),
+        "dividends": len(dividends) - len(kept_divs),
+    }
+    kept_bars.sort(key=lambda r: r.day)
     return _SecurityInputs(
-        tuple(bars), tuple(splits), tuple(dividends), {"segments": parts}, sealed
+        tuple(kept_bars),
+        tuple(kept_splits),
+        tuple(kept_divs),
+        {"segments": parts, "listing_clipped": clipped},
+        sealed,
     )
 
 
@@ -219,7 +250,7 @@ def build_canonical(
         segs = config.segments.get(sym) or (SymbolSegment(sym, sym),)
         if sym in config.segments:
             segment_rows += [_segment_record(s) for s in segs]
-        gathered[sym] = _gather(sym, segs, source)
+        gathered[sym] = _gather(sym, segs, source, config.listings.get(sym))
     results: list[AdjustmentResult] = []
     for sym in syms:
         g = gathered[sym]
@@ -254,6 +285,9 @@ def build_canonical(
             "adjustment_verifications_sha256": config.verifications_sha256,
             "raw_price_corrections_sha256": config.raw_corrections_sha256,
             "price_corrections_sha256": config.price_corrections_sha256,
+            "listing_periods_sha256": config.listing_periods_sha256,
+            "inputs_status_sha256": source.status_sha256(),
+            "massive_source_tickers_sha256": config.massive_source_tickers_sha256,
         },
         "code_commit": code_commit,
         "sealed_rows_skipped": sealed_total,
@@ -271,7 +305,9 @@ def build_canonical(
         "args": dict(args or {}),
     }
     meta["finished_at"] = clock().isoformat()
-    output = CanonicalOutput(version, dataset, text, tuple(results), unrelated_ids, meta)
+    output = CanonicalOutput(
+        version, dataset, text, tuple(results), unrelated_ids, meta, config.calendar.rows
+    )
     out_dir = sink.write(output)
     by_reason: dict[str, int] = {}
     counts: dict[str, int] = {str(c): 0 for c in sorted(ASSUMPTION_CODES)}
