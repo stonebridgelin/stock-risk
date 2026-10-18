@@ -4,7 +4,7 @@ config/symbol_segments.csv：symbol,source_ticker,from,to,note
     同一 symbol 的各行按文件顺序组成分段；from / to 为空表示该端不设边界。
 config/listing_periods.csv：symbol,listed_from,listed_until,venue,source_url,verified_on,note
     只登记需要截断的代码；日期为空表示该端不设边界（找不到可靠来源时也留空，并在 note 说明）。
-config/price_corrections.csv：symbol,from,to,method,ruling,evidence
+config/price_corrections.csv：symbol,from,to,method,ruling,evidence[,d0a_status]
     复权价更正（I11）；from / to 必填，method 目前只有 use_raw，未知方法报错。
 以 # 开头的行为注释。文件不存在视为没有配置。
 """
@@ -12,10 +12,22 @@ config/price_corrections.csv：symbol,from,to,method,ruling,evidence
 from __future__ import annotations
 
 import csv
+import hashlib
 from datetime import date
 from pathlib import Path
 
-from stock_risk.domain.corrections import CorrectionError, PriceCorrection, parse_method
+from stock_risk.domain.adjustment.inputs import (
+    Verification,
+    check_verification_ids,
+    parse_verification,
+)
+from stock_risk.domain.corrections import (
+    CorrectionError,
+    PriceCorrection,
+    RawPriceCorrection,
+    parse_method,
+    parse_raw_price_correction,
+)
 from stock_risk.domain.listing import ListingPeriod
 from stock_risk.domain.segments import SymbolSegment, validate_segments
 
@@ -67,6 +79,7 @@ class CsvPriceCorrectionProvider:
                 method=parse_method(r["method"]),
                 ruling=r.get("ruling", ""),
                 evidence=r.get("evidence", ""),
+                d0a_status=r.get("d0a_status") or None,
             )
             grouped.setdefault(c.symbol, []).append(c)
         return {s: tuple(cs) for s, cs in grouped.items()}
@@ -92,3 +105,43 @@ class CsvListingPeriodProvider:
                 raise ValueError(f"上市期间配置中代码重复: {p.symbol}")
             out[p.symbol] = p
         return out
+
+
+# ---- T11-D0a：核实登记与原始价更正（第 5、6 节） ----
+
+
+def file_sha256(path: Path) -> str | None:
+    """配置文件内容的 SHA-256；文件不存在为 None。写入数据版本。"""
+    return hashlib.sha256(path.read_bytes()).hexdigest() if path.exists() else None
+
+
+class CsvAdjustmentVerificationProvider:
+    """config/adjustment_verifications.csv：id,target_type,target,source_sha256,kind,value,ruling,evidence。"""
+
+    def __init__(self, path: Path) -> None:
+        self._path = path
+
+    def load(self) -> tuple[Verification, ...]:
+        out = tuple(parse_verification(r) for r in _rows(self._path))
+        check_verification_ids(out)
+        return out
+
+    def sha256(self) -> str | None:
+        return file_sha256(self._path)
+
+
+class CsvRawPriceCorrectionProvider:
+    """config/raw_price_corrections.csv：id,security,day,field,value,ruling,evidence,version。"""
+
+    def __init__(self, path: Path) -> None:
+        self._path = path
+
+    def load(self) -> tuple[RawPriceCorrection, ...]:
+        out = tuple(parse_raw_price_correction(r) for r in _rows(self._path))
+        ids = [c.id for c in out]
+        if len(set(ids)) != len(ids):
+            raise CorrectionError("原始价更正编号重复")
+        return out
+
+    def sha256(self) -> str | None:
+        return file_sha256(self._path)

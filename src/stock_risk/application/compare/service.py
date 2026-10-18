@@ -47,6 +47,7 @@ from stock_risk.application.run_manifest import (
     RunEnvironment,
     RunStart,
     base_manifest,
+    data_identity,
     finish_manifest,
     start_run,
 )
@@ -201,6 +202,7 @@ class CompareService:
             "pairs": len(pairs(sets)),
             "targets": [p.target.label for p in st.prepared],
             "summary_period": ["2010-01-01", "2019-12-31"],
+            **_identity_field(self._replay.loader.reader),
             "timeline_sets": [v0_tl.set_id, v3_tl.set_id],
             "failed": failed,
             "invariant_violations": len(violations),
@@ -333,3 +335,9 @@ def _set_record(s: VariantSet) -> dict[str, Any]:
 
 
 __all__ = ["CompareService", "pair_coverage", "run_set_with"]
+
+
+def _identity_field(reader: object) -> dict[str, object]:
+    """规范数据时运行清单增加 data_identity（T11-D0a 第 7.4 节）；旧数据版本不增加字段。"""
+    identity = data_identity(reader)
+    return {} if identity is None else {"data_identity": identity}

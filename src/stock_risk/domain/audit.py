@@ -13,9 +13,12 @@ import math
 from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
+from decimal import Decimal, localcontext
 from enum import StrEnum
 
+from stock_risk.domain.adjustment.model import GroupRecord, GroupStatus
 from stock_risk.domain.market_data import DailyBar
+from stock_risk.domain.numeric import PARSE_CONTEXT
 from stock_risk.domain.seal import EXPLORATION_END
 
 # 复权系数跳变阈值：任务卡 T00 第 4 节给定（审计报告阈值，不是信号参数）
@@ -112,6 +115,109 @@ def adj_factor_jumps(
             if abs(change) > threshold and b.day not in action_days:
                 out.append(AdjFactorJump(b.day, prev[0], prev[1], f, change))
         prev = (b.day, f)
+    return out
+
+
+# ---- 规范数据的区间审计（T11-D0a 第 8 节；规格第 9.2 节） ----
+
+CANONICAL_EPSILON = Decimal("0.0000005")  # F 量化到 6 位的误差界 ε = 5 × 10⁻⁷
+
+_Ratio = tuple[int, int]  # 精确有理数 (分子, 分母)，分母为正
+
+
+def _ratio(x: Decimal) -> _Ratio:
+    """十进制 → 精确有理数（Decimal.as_integer_ratio 是精确的，不经过 float）。"""
+    return x.as_integer_ratio()
+
+
+def _mul(*xs: _Ratio) -> _Ratio:
+    n, d = 1, 1
+    for a, b in xs:
+        n, d = n * a, d * b
+    return n, d
+
+
+def _add(x: _Ratio, y: _Ratio) -> _Ratio:
+    return x[0] * y[1] + y[0] * x[1], x[1] * y[1]
+
+
+def _neg(x: _Ratio) -> _Ratio:
+    return -x[0], x[1]
+
+
+def _le(x: _Ratio, y: _Ratio) -> bool:
+    """x ≤ y（分母为正，交叉相乘）。"""
+    return x[0] * y[1] <= y[0] * x[1]
+
+
+def factor_change_within(
+    r_prev: Decimal,
+    f_prev: Decimal,
+    r_day: Decimal,
+    f_day: Decimal,
+    delta_b: _Ratio,
+    epsilon: Decimal = CANONICAL_EPSILON,
+) -> bool:
+    """ΔB 是否落在允许区间：
+    [(F_prev − ε)·R_day ÷ ((F_day + ε)·R_prev)，(F_prev + ε)·R_day ÷ ((F_day − ε)·R_prev)]。
+
+    方向：F = R ÷ B，所以 (R_day/F_day) ÷ (R_prev/F_prev) = ΔB（与 adj_factor_jumps 相反）。
+    全部转成精确有理数后交叉相乘比较（T11R-01），不在任何有限精度上下文中做除法。"""
+    rp, fp, rd, fd, e = (_ratio(x) for x in (r_prev, f_prev, r_day, f_day, epsilon))
+    # 下界：(F_prev − ε)·R_day ≤ ΔB·(F_day + ε)·R_prev
+    lower_ok = _le(_mul(_add(fp, _neg(e)), rd), _mul(delta_b, _add(fd, e), rp))
+    # 上界：ΔB·(F_day − ε)·R_prev ≤ (F_prev + ε)·R_day（F_day − ε > 0）
+    fd_minus = _add(fd, _neg(e))
+    if fd_minus[0] <= 0:
+        return lower_ok
+    upper_ok = _le(_mul(delta_b, fd_minus, rp), _mul(_add(fp, e), rd))
+    return lower_ok and upper_ok
+
+
+@dataclass(frozen=True, slots=True)
+class CanonicalBarPrices:
+    """区间审计所需的一根日线：原始收盘 R 与 F 收盘（十进制，来自规范数据的文本）。"""
+
+    day: date
+    raw_close: Decimal
+    f_close: Decimal
+
+
+@dataclass(frozen=True, slots=True)
+class CanonicalFactorMismatch:
+    prev_day: date
+    day: date
+    expected_factor: Decimal  # 区间内 APPLIED 组的因子之积 ΔB
+    groups: tuple[str, ...]
+
+
+def canonical_factor_checks(
+    bars: Sequence[CanonicalBarPrices], groups: Sequence[GroupRecord]
+) -> list[CanonicalFactorMismatch]:
+    """对前后两根有效日线 (prev_day, day]，取计算组表中 e′ 落在区间内的 APPLIED 组各乘一次，
+    得到预期累计因子 ΔB（区间内没有组时为 1），核对 R/F 的比值变化；不按原始行动相乘（T11-03）。"""
+    applied = sorted(
+        (g for g in groups if g.status is GroupStatus.APPLIED and g.effective_day is not None),
+        key=lambda g: (g.effective_day, g.original_ex_date, g.group_id),
+    )
+    out: list[CanonicalFactorMismatch] = []
+    for prev, cur in zip(bars, bars[1:], strict=False):
+        inside = [g for g in applied if prev.day < g.effective_day <= cur.day]  # type: ignore[operator]
+        ratio: _Ratio = (1, 1)
+        expected = Decimal(1)
+        for g in inside:
+            assert g.b is not None
+            ratio = _mul(ratio, _ratio(g.b))
+            with localcontext(PARSE_CONTEXT):  # 只用于报告；判断用上面的精确有理数
+                expected = expected * g.b
+        if not factor_change_within(
+            prev.raw_close, prev.f_close, cur.raw_close, cur.f_close, ratio
+        ):
+            out.append(
+                CanonicalFactorMismatch(
+                    prev.day, cur.day, expected, tuple(g.group_id for g in inside)
+                )
+            )
     return out
 
 

@@ -1,0 +1,5 @@
+# 复权核实登记（T11-D0a 第 5 节；裁决 A-4 的"具体处理依据"）。本卡只建表头，条目由 D0b 核查后登记
+# target_type = action：target 为 action_id（<来源>#<行号>），source_sha256 必填且须与当前来源文件一致；target_type = group：target 为 group_id，source_sha256 为空
+# kind：SAME_DAY_BASIS_POST / SAME_DAY_BASIS_PRE（同日分红口径，针对计算组）；ABNORMAL_CONFIRMED（异常因子核实为真实，value 为核实金额，须与输入一致）；DECL_RECORD_CORRECTED（公告日记录有误，针对原始行动，value 为更正后的公告日）
+# ruling、evidence 都不能为空；日期不得晚于 2019-12-31（封存越界报错）；ILLEGAL_FACTOR 没有对应的登记类型。修改本文件需同步 docs/develop_docs/02-数据获取.md
+id,target_type,target,source_sha256,kind,value,ruling,evidence

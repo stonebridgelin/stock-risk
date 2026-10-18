@@ -91,3 +91,13 @@ def finish_manifest(manifest: dict[str, Any], finished: datetime) -> dict[str, A
     started = datetime.fromisoformat(manifest["started_at"])
     manifest["elapsed_seconds"] = round((finished - started).total_seconds(), 1)
     return manifest
+
+
+def data_identity(reader: object) -> dict[str, Any] | None:
+    """规范数据的身份（T11-D0a 第 7.4 节）：数据版本号、_dataset.json 与 MANIFEST.sha256 的哈希。
+
+    旧数据版本（没有 identity 方法的读取器）返回 None，运行清单不增加字段。"""
+    if not getattr(reader, "is_canonical", False):
+        return None
+    identity = reader.identity()  # type: ignore[attr-defined]
+    return dict(identity)

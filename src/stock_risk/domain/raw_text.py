@@ -25,6 +25,8 @@ class RawBarText:
     adj_high: str
     adj_low: str
     adj_close: str
+    # 缺列或空单元格为 None（未知）；"0" 是真实的零（T11-D0a 第 2 节）
+    adj_volume: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,6 +45,17 @@ def _check_ohlc(
         raise InvalidInputError(f"{symbol} {day} {basis}: 收盘不在 [低, 高]（C={c} L={lo} H={h}）")
 
 
+def parse_adj_volume(text: str | None, field: str) -> float | None:
+    """adj_volume 的读法（T11-D0a 第 2.2 节）：None 或空 → None（未知）；"0" → 0.0（真实的零）；
+    负数、非有限、无法解析 → InvalidInputError，不当作缺失。"""
+    if text is None or not text.strip():
+        return None
+    value = parse_finite(text, field)
+    if value < 0:
+        raise InvalidInputError(f"{field} 为负数: {text!r}")
+    return value
+
+
 def parse_bar(symbol: str, row: RawBarText) -> DailyBar:
     def q(text: str, name: str) -> float:
         return quantize_price(text, f"{symbol} {row.day} {name}")
@@ -58,6 +71,7 @@ def parse_bar(symbol: str, row: RawBarText) -> DailyBar:
         adj_high=q(row.adj_high, "adj_high"),
         adj_low=q(row.adj_low, "adj_low"),
         adj_close=q(row.adj_close, "adj_close"),
+        adj_volume=parse_adj_volume(row.adj_volume, f"{symbol} {row.day} adj_volume"),
     )
     _check_ohlc(symbol, row.day, "原始价", bar.open, bar.high, bar.low, bar.close)
     _check_ohlc(symbol, row.day, "复权价", bar.adj_open, bar.adj_high, bar.adj_low, bar.adj_close)

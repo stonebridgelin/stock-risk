@@ -24,7 +24,11 @@ from stock_risk.application.ports import (
     RawDataReader,
 )
 from stock_risk.domain.calendar import TradingCalendar
-from stock_risk.domain.corrections import PriceCorrection, apply_corrections
+from stock_risk.domain.corrections import (
+    PriceCorrection,
+    apply_corrections,
+    check_canonical_corrections,
+)
 from stock_risk.domain.listing import ListingPeriod
 from stock_risk.domain.market_data import PriceHistory
 from stock_risk.domain.numeric import InvalidInputError
@@ -82,6 +86,8 @@ class MarketDataLoader:
         self._listings: Mapping[str, ListingPeriod] = listings.load()
         self._corrections: Mapping[str, tuple[PriceCorrection, ...]] = corrections.load()
         self._calendar: TradingCalendar | None = None
+        # 规范数据（T11-D0a 第 6 节）：use_raw 不作用于 F；未标注 absorbed 的 use_raw 条目读取时报错
+        self._canonical = bool(getattr(reader, "is_canonical", False))
 
     @property
     def reader(self) -> RawDataReader:
@@ -97,6 +103,14 @@ class MarketDataLoader:
 
     def exists(self, symbol: str) -> bool:
         return self._reader.exists(symbol)
+
+    def _applicable(self, symbol: str) -> tuple[PriceCorrection, ...]:
+        """要应用的更正。规范模式下先检查登记，再一律不应用（F 由原始价重算，不再需要 use_raw）。"""
+        corrs = self._corrections.get(symbol, ())
+        if self._canonical:
+            check_canonical_corrections(symbol, corrs)
+            return ()
+        return corrs
 
     # ---- 下游路径（I12）----
     def _parsed(self, symbol: str) -> PriceHistory:
@@ -120,7 +134,9 @@ class MarketDataLoader:
         if not history.bars:
             raise InvalidInputError(f"{symbol}: 没有日线")
         listing = self._listings.get(symbol)
-        corrs = self._corrections.get(symbol, ()) if corrected else ()
+        corrs = self._applicable(symbol) if corrected else ()
+        if not corrected and self._canonical:
+            self._applicable(symbol)  # 规范模式下三个入口一律检查
         if corrs:  # ③
             history = apply_corrections(history, corrs, listing)
         calendar = self.calendar()
@@ -144,6 +160,6 @@ class MarketDataLoader:
         """更正不合规（超出上市期间、区间内有公司行动等）时抛 CorrectionError，不静默跳过。"""
         raw = self._reader.load(symbol)
         listing = self._listings.get(symbol)
-        corrs = self._corrections.get(symbol, ())
+        corrs = self._applicable(symbol)
         corrected = apply_corrections(raw.history, corrs, listing) if corrs else raw.history
         return LoadedHistory(symbol, raw.history, corrected, corrs, listing, raw.sealed_rows)

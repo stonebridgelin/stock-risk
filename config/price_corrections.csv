@@ -1,5 +1,6 @@
 # 复权价更正（I11，T00a）。数据源复权价有已证实的错误时登记；读取时更正，data/raw 原始文件不改
 # method：use_raw = 区间内 adj_open/adj_high/adj_low/adj_close 用原始价替代（区间内不得有公司行动）
 # from / to 必须落在上市期间内；每条必须有产品经理裁定编号（ruling）与数据依据（evidence）；修改本文件需同步 docs/develop_docs/02-数据获取.md
-symbol,from,to,method,ruling,evidence
+# d0a_status（T11-D0a 第 6 节，可选）：D0b 复核后标注，absorbed = 由 D0a 吸收；规范数据下未标注 absorbed 的 use_raw 条目读取时报错。旧行为空
+symbol,from,to,method,ruling,evidence,d0a_status
 SHLD,2018-03-28,2018-10-23,use_raw,PM-03,"2018-03-28 原始收盘 2.50→2.81（+12.4%）而复权收盘 2.50→2.31（−7.5%），方向相反；当天及前后无公司行动；复权系数此前恒为 1.0、此后恒为约 0.823"

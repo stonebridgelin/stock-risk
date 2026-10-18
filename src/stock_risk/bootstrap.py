@@ -8,6 +8,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from stock_risk.application.audit_raw_data import AuditRawDataService
+from stock_risk.application.build_canonical import (
+    BuildSummary,
+    CanonicalConfig,
+    build_canonical,
+)
 from stock_risk.application.check_calendar import CheckCalendarService
 from stock_risk.application.compare.service import CompareService
 from stock_risk.application.fetch_batch import BatchItem, FetchBatchService, QuotaLimits
@@ -35,10 +40,16 @@ from stock_risk.infrastructure.replay.compare_files import CompareFileSink
 from stock_risk.infrastructure.replay.environment import LocalRunEnvironment
 from stock_risk.infrastructure.replay.files import ReplayFileSink
 from stock_risk.infrastructure.storage.audit_report_writer import AuditReportFileWriter
+from stock_risk.infrastructure.storage.canonical_inputs import MassiveCanonicalSource
+from stock_risk.infrastructure.storage.canonical_inputs import read_calendar as read_calendar_file
+from stock_risk.infrastructure.storage.canonical_store import CanonicalFileSink
 from stock_risk.infrastructure.storage.csv_config_providers import (
+    CsvAdjustmentVerificationProvider,
     CsvListingPeriodProvider,
     CsvPriceCorrectionProvider,
+    CsvRawPriceCorrectionProvider,
     CsvSegmentProvider,
+    file_sha256,
 )
 from stock_risk.infrastructure.storage.csv_raw_reader import CsvRawDataReader
 from stock_risk.infrastructure.storage.csv_raw_repository import (
@@ -371,4 +382,37 @@ def build_verify_massive_relay_service(
         clock=time.monotonic,
         progress=progress,
         queries=queries,
+    )
+
+
+def run_build_canonical(
+    *,
+    massive_dir: Path,
+    calendar_file: Path,
+    config_dir: Path,
+    out_root: Path,
+    symbols: Sequence[str],
+    project_root: Path,
+    args: dict[str, object],
+) -> BuildSummary:
+    """规范数据版本的构建（T11-D0a 第 7 节）。只在测试的临时目录上运行，不生成正式数据。"""
+    verifications = CsvAdjustmentVerificationProvider(config_dir / "adjustment_verifications.csv")
+    raw_corrections = CsvRawPriceCorrectionProvider(config_dir / "raw_price_corrections.csv")
+    config = CanonicalConfig(
+        calendar=read_calendar_file(calendar_file),
+        segments=CsvSegmentProvider(config_dir / "symbol_segments.csv").load(),
+        verifications=verifications.load(),
+        verifications_sha256=verifications.sha256(),
+        raw_corrections=raw_corrections.load(),
+        raw_corrections_sha256=raw_corrections.sha256(),
+        price_corrections_sha256=file_sha256(config_dir / "price_corrections.csv"),
+    )
+    return build_canonical(
+        symbols,
+        MassiveCanonicalSource(massive_dir),
+        config,
+        CanonicalFileSink(out_root),
+        code_commit=LocalRunEnvironment(project_root).git_state().commit,
+        clock=lambda: datetime.now(UTC),
+        args=args,
     )

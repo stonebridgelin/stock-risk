@@ -21,6 +21,9 @@ class DailyBar:
     adj_high: float
     adj_low: float
     adj_close: float
+    # 前向复权成交量 F_V（D0a 规格第 4 节）。None 表示未知（没有调整量）：
+    # 不得当作 0，也不得回退到 volume
+    adj_volume: float | None = None
 
 
 class ActionType(StrEnum):

@@ -36,6 +36,7 @@ BAR_COLUMNS = [
     "adj_high",
     "adj_low",
     "adj_close",
+    "adj_volume",  # T11-D0a 第 2.3 节：None 写为空单元格
 ]
 ACTION_COLUMNS = ["date", "type", "value"]
 STATUS_FILE = "_fetch_status.json"
@@ -128,6 +129,7 @@ class CsvRawDataRepository:
                     b.adj_high,
                     b.adj_low,
                     b.adj_close,
+                    "" if b.adj_volume is None else b.adj_volume,
                 ]
                 for b in history.bars
             ],

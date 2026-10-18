@@ -1,0 +1,4 @@
+# 原始价错误的更正（T11-D0a 第 6 节第 1 项；D0a 规格第 9.1 节）。本卡只建表头
+# 在复权之前替换原始文本：field 为 open / high / low / close / volume 之一，value 为替换值原文；更正 volume 改变 F_V 与成交额，不影响价格
+# 每条必须有 ruling、evidence、version；day 不得晚于 2019-12-31（封存越界报错）；不沿用 price_corrections.csv 的 use_raw 身份。修改本文件需同步 docs/develop_docs/02-数据获取.md
+id,security,day,field,value,ruling,evidence,version

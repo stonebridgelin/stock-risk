@@ -48,6 +48,7 @@ from stock_risk.application.run_manifest import (
     RunEnvironment,
     RunStart,
     base_manifest,
+    data_identity,
     finish_manifest,
     make_run_id,
     start_run,
@@ -190,6 +191,9 @@ class ReplayRunService:
             "sha256": self._env.file_hashes()["calendar_spy"]["sha256"],
         }
         manifest["summary_period"] = [SUMMARY_START.isoformat(), SUMMARY_END.isoformat()]
+        identity = data_identity(self._replay.loader.reader)
+        if identity is not None:
+            manifest["data_identity"] = identity
         manifest["targets"] = [_target_record(p) for p in prepared]
         self._progress(f"run_id = {run.run_id}（{run.run_kind}），{len(prepared)} 个回放对象")
         return _report(run, manifest), prepared

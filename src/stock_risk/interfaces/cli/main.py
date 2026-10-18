@@ -12,6 +12,7 @@
     uv run stock-risk probe-tickers / fetch-batch     选参集数据（见 cli/selection.py，T08d-1）
     uv run stock-risk probe-massive                   Massive 试验（见 cli/massive.py，T08d-2a）
     uv run stock-risk audit-raw --dir D --list L      审计其他目录（如 data/raw_selection）
+    uv run stock-risk build-canonical ...             规范复权数据版本（T11-D0a，只在测试中调用）
 """
 
 from __future__ import annotations
@@ -32,8 +33,9 @@ from stock_risk.bootstrap import (
     build_show_ranges_service,
     build_v0_regression,
     load_batch_list,
+    run_build_canonical,
 )
-from stock_risk.config.settings import load_settings
+from stock_risk.config.settings import PROJECT_ROOT, load_settings
 from stock_risk.interfaces.cli import massive, selection
 
 DEFAULT_START = DOWNLOAD_START
@@ -173,6 +175,35 @@ def _cmd_compare(args: argparse.Namespace) -> int:
     return 0 if ok else 1
 
 
+def _cmd_build_canonical(args: argparse.Namespace) -> int:
+    symbols = [s.strip() for s in args.symbols.split(",") if s.strip()]
+    summary = run_build_canonical(
+        massive_dir=Path(args.massive_dir),
+        calendar_file=Path(args.calendar),
+        config_dir=Path(args.config_dir),
+        out_root=Path(args.out),
+        symbols=symbols,
+        project_root=PROJECT_ROOT,
+        args={k: v for k, v in vars(args).items() if k != "func"},
+    )
+    print(f"数据版本：{summary.version}（{summary.out_dir}）")
+    print(
+        f"证券 {summary.total} 只：可正式使用 {summary.usable}，"
+        f"不可正式使用 {summary.total - summary.usable}"
+    )
+    for code, n in summary.not_usable_by_reason.items():
+        print(f"  不可正式使用原因 {code}：{n} 只")
+    for code, n in summary.assumption_counts.items():
+        print(f"  假设 {code}：{n} 条")
+    print(
+        f"终点待处理：{summary.terminal_pending} 组；"
+        f"封存期行（只计数并跳过）：{summary.sealed_rows_skipped}"
+    )
+    if summary.unrelated_verification_ids:
+        print("与本次构建证券无关的核实登记：" + "，".join(summary.unrelated_verification_ids))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="stock-risk")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -213,6 +244,18 @@ def main(argv: list[str] | None = None) -> int:
     )
     rg.add_argument("--baseline", required=True, help="基准 run_id（output/replay/ 下的目录名）")
     rg.set_defaults(func=_cmd_regress_v0)
+
+    bc = sub.add_parser(
+        "build-canonical", help="构建规范前向复权数据版本（T11-D0a；目前只在测试中调用）"
+    )
+    bc.add_argument(
+        "--massive-dir", required=True, help="Massive 付费数据目录（含 aggs/、actions/）"
+    )
+    bc.add_argument("--calendar", required=True, help="交易日历 CSV（一列 date）")
+    bc.add_argument("--symbols", required=True, help="证券代码，逗号分隔")
+    bc.add_argument("--config-dir", default=str(PROJECT_ROOT / "config"), help="配置目录")
+    bc.add_argument("--out", required=True, help="输出根目录（写入 <根>/<版本号>/）")
+    bc.set_defaults(func=_cmd_build_canonical)
 
     r = sub.add_parser("show-ranges", help="输出各代码的三个区间、端点类型与缺价日（I2、I3）")
     r.set_defaults(func=_cmd_show_ranges)
