@@ -239,6 +239,10 @@ def _cmd_fetch_massive_d0b(args: argparse.Namespace) -> int:
     )
     for k in r.failed + r.incomplete:
         print(f"  {k}")
+    if r.date_missing:
+        print(f"有缺日期记录的请求 {len(r.date_missing)} 项（未解决的数据问题，原文见台账）：")
+        for k in r.date_missing:
+            print(f"  {k}")
     if r.stopped:
         print(f"停止原因：{r.stopped}（账本已保存）；尚未处理 {r.remaining} 项")
     return 1 if (r.stopped or r.failed or r.incomplete) else 0

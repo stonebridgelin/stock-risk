@@ -60,7 +60,8 @@ class SavedFile:
     rows: int
     sealed_dropped: int
     masked: int  # 分红：其他日期字段被遮蔽的行数
-    currency_missing: int  # 分红：响应中没有币种字段的行数
+    currency_missing: int  # 分红：币种字段缺失或为 null 的行数
+    date_missing: tuple[dict[str, str], ...] = ()  # 缺日期的记录原文（P1-01）
 
 
 class D0bSource(Protocol):
@@ -129,6 +130,7 @@ class FetchReport:
     completed: list[str] = field(default_factory=list)
     failed: list[str] = field(default_factory=list)
     incomplete: list[str] = field(default_factory=list)
+    date_missing: list[str] = field(default_factory=list)  # 有缺日期记录的请求（未解决问题）
     stopped: str | None = None  # 401 / 403 / 限频
     remaining: int = 0
 
@@ -231,7 +233,11 @@ class FetchMassiveD0bService:
                     "sealed_dropped": saved.sealed_dropped,
                     "file": saved.path,
                     "sha256": saved.sha256,
+                    "date_missing": len(saved.date_missing),
                 }
+                if saved.date_missing:  # 不静默丢弃：原文记入台账，作为未解决的数据问题交给 P3
+                    entry["date_missing_rows"] = list(saved.date_missing)
+                    report.date_missing.append(key)
                 if spec.category == DIVIDENDS:
                     entry["dates_masked"] = saved.masked
                     entry["currency_field_missing"] = saved.currency_missing

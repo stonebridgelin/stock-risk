@@ -172,6 +172,10 @@ class MassiveCanonicalSource:
             raise CanonicalBuildError(f"{rel}: {INPUTS_STATUS_FILE} 中没有登记")
         if entry.get("status") != "ok" or entry.get("complete") is not True:
             raise CanonicalBuildError(f"{rel}: 请求不是成功且完整（{entry.get('status')}）")
+        if entry.get("date_missing"):
+            raise CanonicalBuildError(
+                f"{rel}: 有 {entry['date_missing']} 条缺日期的记录未解决（T12-D0b P1-01）"
+            )
         if got.sha256 is None:
             raise CanonicalBuildError(f"{rel}: 文件缺失")
         if got.sha256 != entry.get("sha256"):

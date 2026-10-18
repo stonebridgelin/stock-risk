@@ -17,7 +17,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
@@ -71,13 +71,25 @@ class Records:
     rows: list[dict[str, str]]
     sealed_dropped: int
     masked: int = 0  # 分红：其他日期字段被遮蔽的行数
-    currency_missing: int = 0  # 分红：响应中没有币种字段的行数
+    currency_missing: int = 0  # 分红：币种字段缺失或为 null 的行数
+    # 日期（日线 t、拆股执行日、分红除息日）缺失的行：不写入数据文件，原文另记，
+    # 作为未解决的数据问题交给 P3；不计入封存数（P1-01）
+    date_missing: list[dict[str, str]] = field(default_factory=list)
+
+
+def raw_copy(r: Mapping[str, Any]) -> dict[str, str]:
+    """缺日期的记录原文（标量字段），记入台账供 P3 处理。"""
+    return {k: text(v) for k, v in sorted(r.items()) if not isinstance(v, dict | list)}
 
 
 def bar_records(results: Sequence[Mapping[str, Any]]) -> Records:
     rows: list[dict[str, str]] = []
+    missing_date: list[dict[str, str]] = []
     dropped = 0
     for r in results:
+        if r.get("t") in (None, ""):
+            missing_date.append(raw_copy(r))
+            continue
         d = bar_day(r["t"])
         if d > EXPLORATION_END:
             dropped += 1
@@ -95,15 +107,19 @@ def bar_records(results: Sequence[Mapping[str, Any]]) -> Records:
             }
         )
     rows.sort(key=lambda x: x["date"])
-    return Records(rows, dropped)
+    return Records(rows, dropped, date_missing=missing_date)
 
 
 def split_records(results: Sequence[Mapping[str, Any]]) -> Records:
     rows: list[dict[str, str]] = []
+    missing_date: list[dict[str, str]] = []
     dropped = 0
     for r in results:
         d = _date(r.get("execution_date"))
-        if d is None or d > EXPLORATION_END:
+        if d is None:
+            missing_date.append(raw_copy(r))
+            continue
+        if d > EXPLORATION_END:
             dropped += 1
             continue
         rows.append(
@@ -114,15 +130,19 @@ def split_records(results: Sequence[Mapping[str, Any]]) -> Records:
             }
         )
     rows.sort(key=lambda x: x["execution_date"])
-    return Records(rows, dropped)
+    return Records(rows, dropped, date_missing=missing_date)
 
 
 def dividend_records(results: Sequence[Mapping[str, Any]]) -> Records:
     rows: list[dict[str, str]] = []
+    missing_date: list[dict[str, str]] = []
     dropped = masked_rows = missing = 0
     for r in results:
         d = _date(r.get("ex_dividend_date"))
-        if d is None or d > EXPLORATION_END:
+        if d is None:
+            missing_date.append(raw_copy(r))
+            continue
+        if d > EXPLORATION_END:
             dropped += 1
             continue
         row = {
@@ -138,15 +158,15 @@ def dividend_records(results: Sequence[Mapping[str, Any]]) -> Records:
                 v = None
             row[f] = "" if v is None else v.isoformat()
         row["masked_after_2019"] = "|".join(masked)
-        if "currency" in r:
+        if r.get("currency") is not None:
             row["currency"] = text(r["currency"])
-        else:
+        else:  # 没有币种字段，或字段值为 null（P1-03）：写空，计入缺失
             row["currency"] = ""
             missing += 1
         masked_rows += bool(masked)
         rows.append(row)
     rows.sort(key=lambda x: x["ex_dividend_date"])
-    return Records(rows, dropped, masked_rows, missing)
+    return Records(rows, dropped, masked_rows, missing, missing_date)
 
 
 def relative_path(category: str, ticker: str) -> str:
@@ -207,6 +227,7 @@ class MassiveD0bFiles:
             records.sealed_dropped,
             records.masked,
             records.currency_missing,
+            tuple(records.date_missing),
         )
 
     def file_sha256(self, rel: str) -> str | None:
