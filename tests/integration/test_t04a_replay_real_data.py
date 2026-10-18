@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import os
+from concurrent.futures import ProcessPoolExecutor
 from datetime import date
 from functools import cache
 
@@ -20,7 +22,7 @@ from stock_risk.application.replay import (
 from stock_risk.bootstrap import build_replay_service
 from stock_risk.config.settings import load_settings
 from stock_risk.domain.lifecycle.invariants import check_invariants
-from stock_risk.domain.lifecycle.model import DataStatus, EndReason, EventType
+from stock_risk.domain.lifecycle.model import DataStatus, Display, EndReason, EventType
 from stock_risk.domain.lifecycle.params import (
     EXPLORATION_ASSUMPTIONS,
     AtrBasis,
@@ -29,6 +31,8 @@ from stock_risk.domain.lifecycle.params import (
     ReleasePath,
     reference_candidates,
 )
+from stock_risk.domain.lifecycle.runner import RunResult
+from stock_risk.domain.lifecycle.semantic_digest import semantic_digest
 from stock_risk.domain.observation import RightEnd
 
 SETTINGS = load_settings()
@@ -146,3 +150,86 @@ def test_I17_no_lookahead_on_real_data(symbol: str) -> None:
         part = replay_prepared(r.prepared, PARAMS, cal, upto=t).results
         assert part[-1].record.day == t
         assert part == full[: len(part)]
+
+
+# ---- T10-M0b 第 3 节：事件锚定的截断点（I-01） ----
+
+ANCHOR_EVENTS = (
+    EventType.START,
+    EventType.ESCALATE,
+    EventType.DOWNGRADE,
+    EventType.RELEASE,
+    EventType.RECOVERY_OBS,
+    EventType.RECOVERY_REVOKED,
+    EventType.RECOVERY_FAIL,
+    EventType.DATA_BREAK,
+)
+ANCHOR_TARGETS = (("AAPL", ""), ("NFLX", ""), ("GE", ""), ("SHLD", CORRECTED))
+
+
+def anchor_days(
+    result: RunResult, calendar_days: list[date]
+) -> tuple[dict[str, list[date]], set[date]]:
+    """锚点（类别 → 日期）与截断点集合：每类事件的首次与末次出现日、显示"数据中断"的第一日与
+    最后一日、record.reset 为真的日子，以及这些日子的前一个和后一个交易日；
+    只保留回放结果中存在、且严格早于观察终点的日子。"""
+    res = result.results
+    obs_end = res[-1].record.day
+    present = {r.record.day for r in res}
+    anchors: dict[str, list[date]] = {}
+    for kind in ANCHOR_EVENTS:
+        days = [e.day for r in res for e in r.events if e.type is kind]
+        anchors[kind.value] = sorted({days[0], days[-1]}) if days else []
+    br = [r.record.day for r in res if r.record.display is Display.DATA_BREAK]
+    anchors["DISPLAY_DATA_BREAK"] = sorted({br[0], br[-1]}) if br else []
+    anchors["RESET"] = [r.record.day for r in res if r.record.reset]
+    index = {d: i for i, d in enumerate(calendar_days)}
+    cuts: set[date] = set()
+    for days in anchors.values():
+        for d in days:
+            i = index[d]
+            cuts |= {calendar_days[j] for j in (i - 1, i, i + 1) if 0 <= j < len(calendar_days)}
+    return anchors, {t for t in cuts if t in present and t < obs_end}
+
+
+def uncensored_prefix(full: RunResult, k: int) -> RunResult:
+    """未截尾的对应前缀：results = full.results[:k]，final_state = full.results[k − 1].state，
+    censored_episode 为空（T10-M0b 第 3 节，M-05）。"""
+    return RunResult(full.results[:k], full.results[k - 1].state, None)
+
+
+@pytest.mark.parametrize(("symbol", "variant"), ANCHOR_TARGETS)
+def test_I17_no_lookahead_at_event_anchors(symbol: str, variant: str) -> None:
+    """每个截断点：前缀运行与未截尾的对应前缀逐字段相同，全语义摘要也相同。
+    截断点很多（reset 日每只数百个），按块分给多个进程检查；每个截断点的检查内容不变。"""
+    r = replay(symbol, variant)
+    cal = service().loader.calendar()
+    _, cuts = anchor_days(r.result, list(cal.days))
+    assert cuts
+    ordered = sorted(cuts)
+    chunks = [(symbol, variant, ordered[i : i + 40]) for i in range(0, len(ordered), 40)]
+    workers = max(1, min(7, (os.cpu_count() or 2) - 1))
+    with ProcessPoolExecutor(max_workers=workers) as pool:
+        results = list(pool.map(_check_cuts, chunks))
+    assert sum(n for n, _ in results) == len(ordered)
+    failures = [f for _, fs in results for f in fs]
+    assert failures == [], failures[:10]
+
+
+def _check_cuts(args: tuple[str, str, list[date]]) -> tuple[int, list[str]]:
+    """子进程：逐个截断点检查，返回 (检查数, 不一致的截断点)。"""
+    symbol, variant, cuts = args
+    r = replay(symbol, variant)
+    cal = service().loader.calendar()
+    failures: list[str] = []
+    for t in cuts:
+        part = replay_prepared(r.prepared, PARAMS, cal, upto=t)
+        k = len(part.results)
+        expected = uncensored_prefix(r.result, k)
+        if part.results[-1].record.day != t:
+            failures.append(f"{symbol} {t}：前缀最后一日不是 T")
+        elif part != expected:
+            failures.append(f"{symbol} {t}：前缀运行与未截尾的对应前缀不同")
+        elif semantic_digest(part) != semantic_digest(expected):
+            failures.append(f"{symbol} {t}：全语义摘要不同")
+    return len(cuts), failures

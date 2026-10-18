@@ -4,8 +4,10 @@
   写出 events、daily、episodes、chart 与 index、summary；
 
   每个结果读回做一致性检查，并运行不变量检查器。
-- all：768 组全量，只写 summary；按个股多进程（I17 第 ② 项：单进程与多进程、
-缓存与不缓存的离散结果相同）。
+- all：768 组全量，只写 summary；按个股多进程（I17 第 ② 项：固定抽样的检查键上，单进程不缓存、
+单进程缓存与多进程缓存三种模式的离散摘要与全语义摘要都相同；T10-M0b 第 2 节）。
+  预期检查键在运行开始时由 I17_SYMBOLS × I17_CANDIDATES 生成，实际检查的键必须与之完全相等。
+  四模式与倒序提交由专用合成测试检查（tests/unit/application/test_i17_modes.py）。
 工作区不干净或 git 不可用时 run_kind = debug；干净时为 formal（I16、P-26）。
 """
 
@@ -59,6 +61,7 @@ from stock_risk.domain.lifecycle.params import (
     candidate_grid,
     reference_candidates,
 )
+from stock_risk.domain.lifecycle.semantic_digest import semantic_digest
 
 BACKGROUND_SYMBOLS = ("SPY", "QQQ")
 I17_CANDIDATES = (1, 385, 768)
@@ -79,10 +82,12 @@ __all__ = [
 def _summarize_target(
     args: tuple[PreparedSymbol, TradingCalendar, tuple[tuple[int, Candidate], ...], frozenset[int]],
 ) -> dict[str, Any]:
-    """多进程的工作单元：一个回放对象 × 一组候选。返回汇总行、不变量违反数与指定候选的离散结果。"""
+    """多进程的工作单元：一个回放对象 × 一组候选。返回汇总行、不变量违反数，
+    以及指定候选的离散摘要与全语义摘要（I17 ②）。"""
     prepared, calendar, cands, digest_ids = args
     rows: list[dict[str, Any]] = []
     digests: dict[int, tuple] = {}
+    semantic: dict[int, str] = {}
     violations: list[str] = []
     failed: list[str] = []
     for cid, cand in cands:
@@ -100,13 +105,39 @@ def _summarize_target(
         rows.append(summarize(rep, episode_rows(rep)))
         if cid in digest_ids:
             digests[cid] = discrete_digest(result)
+            semantic[cid] = semantic_digest(result)
     return {
         "target": prepared.target.label,
         "rows": rows,
         "violations": violations,
         "failed": failed,
         "digests": digests,
+        "semantic": semantic,
     }
+
+
+def submission_order[T](items: Sequence[T], reverse: bool = False) -> list[T]:
+    """实际提交给进程池的任务序列（T10-M0b 第 2 节）；reverse 只供专用测试倒序提交。"""
+    return list(reversed(items)) if reverse else list(items)
+
+
+def i17_expected_keys(symbols: Sequence[str], candidates: Sequence[int]) -> list[tuple[str, int]]:
+    """预期检查键（对象, 候选），在运行开始时由两组常量生成。"""
+    return [(s, c) for s in symbols for c in candidates]
+
+
+def i17_ok(
+    records: Sequence[Mapping[str, Any]], expected: Sequence[Any], missing: Sequence[Any]
+) -> bool:
+    """每条记录的离散与全语义比较都为真，没有缺项、没有重复，且检查不为空。"""
+    keys = [tuple(r["key"]) for r in records]
+    return (
+        bool(records)
+        and not missing
+        and len(keys) == len(set(keys))
+        and set(keys) == {tuple(k) for k in expected}
+        and all(r["equal"] and r["semantic_equal"] for r in records)
+    )
 
 
 @dataclass(slots=True)
@@ -235,27 +266,39 @@ class ReplayRunService:
         clock: Callable[[], datetime],
         symbols: Sequence[str] | None = None,
         workers: int | None = None,
+        *,
+        grid: Sequence[tuple[int, Candidate]] | None = None,
+        i17_symbols: Sequence[str] = I17_SYMBOLS,
+        i17_candidates: Sequence[int] = I17_CANDIDATES,
+        reverse_submission: bool = False,
     ) -> RunReport:
+        """grid、i17_symbols、i17_candidates、reverse_submission 只供专用合成测试使用；
+        正式运行取默认值（768 组全量，固定抽样，正常提交顺序）。"""
         report, prepared = self._start(started, "all768", symbols)
-        grid = candidate_grid()
+        expected = i17_expected_keys(i17_symbols, i17_candidates)
+        grid = tuple(grid) if grid is not None else candidate_grid()
         report.manifest["candidates"] = {
             "grid": "10 号第 4.1 节，字典序编号 1–768",
             "count": len(grid),
         }
         calendar = self._replay.loader.calendar()
         workers = workers or max(1, (os.cpu_count() or 2) - 1)
-        digest_ids = frozenset(I17_CANDIDATES)
+        digest_ids = frozenset(i17_candidates)
         tasks = [(p, calendar, grid, digest_ids) for p in prepared]
+        submitted = submission_order(tasks, reverse_submission)
+        self.last_submission = [t[0].target.label for t in submitted]  # 供测试核对提交顺序
         t0 = clock()
         with ProcessPoolExecutor(max_workers=workers) as pool:
             outs = []
-            for out in pool.map(_summarize_target, tasks):
+            for out in pool.map(_summarize_target, submitted):
                 outs.append(out)
                 self._progress(f"  {out['target']}：{len(out['rows'])} 组完成")
         rows = [r for o in outs for r in o["rows"]]
         violations = [v for o in outs for v in o["violations"]]
         failed = [f for o in outs for f in o["failed"]]
-        i17 = self._i17_check(prepared, calendar, {o["target"]: o["digests"] for o in outs})
+        multi = {o["target"]: (o["digests"], o["semantic"]) for o in outs}
+        self.last_multi = multi  # 供测试按检查键比较各次运行
+        i17, missing = self._i17_check(prepared, calendar, multi, expected)
         self._sink.write_summary(report.run_dir, rows, summarize_candidates(rows))
         report.manifest.update(
             workers=workers,
@@ -266,7 +309,9 @@ class ReplayRunService:
             invariant_violations=len(violations),
             invariant_examples=violations[:20],
             i17_check=i17,
-            i17_ok=all(x["equal"] for x in i17),
+            i17_ok=i17_ok(i17, expected, missing),
+            i17_expected_keys=[list(k) for k in expected],
+            i17_missing_keys=[list(k) for k in missing],
         )
         return self._finish(report, clock())
 
@@ -274,28 +319,39 @@ class ReplayRunService:
         self,
         prepared: Sequence[PreparedSymbol],
         calendar: TradingCalendar,
-        multi: Mapping[str, Mapping[int, tuple]],
-    ) -> list[dict[str, Any]]:
-        """I17 ②：单进程（不缓存、缓存）与多进程（缓存）的离散结果完全相同。"""
+        multi: Mapping[str, tuple[Mapping[int, tuple], Mapping[int, str]]],
+        expected: Sequence[tuple[str, int]],
+    ) -> tuple[list[dict[str, Any]], list[tuple[str, int]]]:
+        """I17 ②：预期检查键上，单进程（不缓存、缓存）与多进程（缓存）的离散摘要与全语义摘要
+        都完全相同。返回 (记录, 缺项)；对象未回放或多进程未返回的键记为缺项。"""
         grid = dict(candidate_grid())
-        out = []
-        for p in prepared:
-            if p.target.label not in I17_SYMBOLS:
+        by_label = {p.target.label: p for p in prepared}
+        fresh_cache: dict[str, PreparedSymbol] = {}
+        out: list[dict[str, Any]] = []
+        missing: list[tuple[str, int]] = []
+        for label, cid in expected:
+            p = by_label.get(label)
+            discrete_m, semantic_m = multi.get(label, ({}, {}))
+            if p is None or cid not in discrete_m or cid not in semantic_m or cid not in grid:
+                missing.append((label, cid))
                 continue
-            fresh = self._replay.prepare(
-                ReplayTarget(p.target.symbol, p.target.variant), p.gap_break, cache=False
-            )
-            for cid in I17_CANDIDATES:
-                params = EngineParams(grid[cid], EXPLORATION_ASSUMPTIONS)
-                single_nocache = discrete_digest(replay_prepared(fresh, params, calendar))
-                single_cache = discrete_digest(replay_prepared(p, params, calendar))
-                multi_cache = multi.get(p.target.label, {}).get(cid)
-                out.append(
-                    {
-                        "target": p.target.label,
-                        "candidate_id": cid,
-                        "equal": single_nocache == single_cache == multi_cache,
-                        "days": len(single_nocache),
-                    }
+            if label not in fresh_cache:
+                fresh_cache[label] = self._replay.prepare(
+                    ReplayTarget(p.target.symbol, p.target.variant), p.gap_break, cache=False
                 )
-        return out
+            params = EngineParams(grid[cid], EXPLORATION_ASSUMPTIONS)
+            nocache = replay_prepared(fresh_cache[label], params, calendar)
+            cached = replay_prepared(p, params, calendar)
+            out.append(
+                {
+                    "key": [label, cid],
+                    "target": label,
+                    "candidate_id": cid,
+                    "equal": discrete_digest(nocache) == discrete_digest(cached) == discrete_m[cid],
+                    "semantic_equal": semantic_digest(nocache)
+                    == semantic_digest(cached)
+                    == semantic_m[cid],
+                    "days": len(nocache.results),
+                }
+            )
+        return out, missing

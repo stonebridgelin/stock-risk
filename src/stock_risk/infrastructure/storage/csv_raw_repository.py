@@ -5,6 +5,7 @@
   <SYMBOL>.actions.csv    该代码的公司行动
   corporate_actions.csv   全部公司行动合并
   _fetch_status.json      每个代码的下载状态（断点续传依据）
+  _request_ledger.json    fetch-batch 的请求记录（T10-M0b 第 6 节；fetch-raw-data 不使用）
   README.txt              来源、时间、口径、成功/缺失清单
   MANIFEST.sha256         日线文件校验值
 """
@@ -38,6 +39,7 @@ BAR_COLUMNS = [
 ]
 ACTION_COLUMNS = ["date", "type", "value"]
 STATUS_FILE = "_fetch_status.json"
+LEDGER_FILE = "_request_ledger.json"
 
 
 def confirmed_no_data(root: Path) -> frozenset[str]:
@@ -150,6 +152,32 @@ class CsvRawDataRepository:
         self._write_merged_actions(ok)
         self._write_manifest(ok)
         self._write_readme(report, ok, bad)
+
+    # ---- fetch-batch 的请求记录与目录核对（T10-M0b 第 6 节） ----
+    def load_ledger(self) -> dict[str, Any] | None:
+        p = self._root / LEDGER_FILE
+        return json.loads(p.read_text("utf-8")) if p.exists() else None
+
+    def save_ledger(self, ledger: dict[str, Any]) -> None:
+        p = self._root / LEDGER_FILE
+        tmp = p.with_suffix(".tmp")
+        tmp.write_text(json.dumps(ledger, ensure_ascii=False, indent=2, sort_keys=True), "utf-8")
+        tmp.replace(p)
+
+    def has_legacy_files(self) -> bool:
+        return self._status_path.exists() or any(p.suffix == ".csv" for p in self._root.iterdir())
+
+    def has_status(self, symbol: str) -> bool:
+        return symbol in self._status
+
+    def file_hashes(self, symbol: str) -> dict[str, str | None]:
+        out: dict[str, str | None] = {}
+        for key, path in (
+            ("price", self._bar_path(symbol)),
+            ("actions", self._root / f"{symbol}.actions.csv"),
+        ):
+            out[key] = hashlib.sha256(path.read_bytes()).hexdigest() if path.exists() else None
+        return out
 
     # ---- 内部 ----
     def _bar_path(self, symbol: str) -> Path:

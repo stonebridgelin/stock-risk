@@ -28,6 +28,7 @@ from stock_risk.domain.calendar import TradingCalendar
 from stock_risk.domain.lifecycle.invariants import check_invariants
 from stock_risk.domain.lifecycle.params import EXPLORATION_ASSUMPTIONS, EngineParams
 from stock_risk.domain.lifecycle.runner import RunResult
+from stock_risk.domain.lifecycle.semantic_digest import semantic_digest
 
 LEVEL_CODE_NA = 9  # 不可计算或不在统计期间（单开关配对的覆盖四格只用可计算日）
 
@@ -40,7 +41,7 @@ class WorkerContext:
     calendar: TradingCalendar
     sets: Mapping[str, VariantSet]
     timeline_ids: frozenset[str]
-    digest_ids: frozenset[tuple[str, str]]  # (套, 对象) 需要返回离散结果（I17 ②）
+    digest_ids: frozenset[tuple[str, str]]  # (套, 对象) 需要返回离散摘要与全语义摘要（I17 ②）
     background: dict[str, dict[date, float]]
     sink: CompareSink
 
@@ -62,6 +63,7 @@ class SetOutcome:
     violations: list[str] = field(default_factory=list)
     failed: list[str] = field(default_factory=list)
     digests: dict[str, tuple] = field(default_factory=dict)
+    semantic: dict[str, str] = field(default_factory=dict)  # 全语义摘要（T10-M0b）
     timeline: list[dict[str, Any]] = field(default_factory=list)
     checks: list[str] = field(default_factory=list)  # 程序检查发现的问题
     max_day: date | None = None
@@ -245,6 +247,7 @@ def _record_target(
     out.max_day = last if out.max_day is None or last > out.max_day else out.max_day
     if (set_id, label) in ctx.digest_ids:
         out.digests[label] = discrete_digest(result)
+        out.semantic[label] = semantic_digest(result)
     rows.add_target(rep, result, view, ctx.run_id)
     fu = release_followups(view)
     out.followups += [{"set_id": set_id, **f} for f in fu]
