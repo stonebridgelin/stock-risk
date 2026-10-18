@@ -17,7 +17,7 @@ from stock_risk.domain.lifecycle.model import Display
 from stock_risk.domain.lifecycle.params import FIXED
 from stock_risk.domain.market_data import DailyBar
 
-BACKGROUND_NOTE = "大盘背景只作参照，未应用背景标签（I8）"
+BACKGROUND_NOTE = "SPY、QQQ 的 63 日回撤：参照显示，不是大盘状态，不进入信号"
 BAND_STATES = (Display.WATCH, Display.ALERT, Display.DATA_BREAK, Display.INSUFFICIENT)
 
 

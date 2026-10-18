@@ -215,7 +215,7 @@ def test_reference_run_outputs_and_manifest(
     assert (report.run_dir / "plotly.min.js").exists() and (report.run_dir / "index.html").exists()
     html = (report.run_dir / "c385" / "AAA" / "chart.html").read_text("utf-8")
     assert 'src="../../plotly.min.js"' in html  # 共用本地 plotly.js，不内嵌
-    note = "未应用背景标签"
+    note = "SPY、QQQ 的 63 日回撤：参照显示，不是大盘状态，不进入信号"  # T-RL 第 4 节
     assert note in html or json.dumps(note)[1:-1] in html  # 图表 JSON 中的中文为转义形式
     # 同一时刻再运行一次：按 run_id 分开，不覆盖
     again = run.run_reference(t, lambda: t, symbols=["AAA"])

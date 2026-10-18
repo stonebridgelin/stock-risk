@@ -145,7 +145,7 @@ def _drawdown_panel(fig: go.Figure, data: ChartData, x: list[str]) -> None:
             go.Scatter(
                 x=x,
                 y=[None if v is None else v * 100 for v in ys],
-                name=f"{sym} 63 日回撤（%，右轴）",
+                name=f"{sym} 63 日回撤（参照，%，右轴）",
                 yaxis="y3",
                 line={"width": 1, "dash": "dot"},
             ),
