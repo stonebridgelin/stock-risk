@@ -126,6 +126,8 @@ def test_B41_post_release_windows(sub: str) -> None:
         }
         exp = case["expected"][key]
         assert got == {**exp, "A_r": Decimal(exp["A_r"])}, (sub, q, got, exp)
+        if not w.complete:  # T09-E5F（C1-01）：不完整窗口的原因含 INCOMPLETE_WINDOW
+            assert "INCOMPLETE_WINDOW" in w.reasons
 
 
 def test_B22_membership_by_peak_and_window_boundary() -> None:

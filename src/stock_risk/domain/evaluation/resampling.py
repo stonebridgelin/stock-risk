@@ -8,7 +8,8 @@
    按顺序拼接后截取前 J 个；
 3. w_i 为证券 i 被抽中的次数，v_b 为块 b 被抽中的次数；格 (i, b) 的权重 w_i × v_b；
 4. 事件加权均值 = Σ 权重 × 值 ÷ Σ 权重（十进制）；分母为 0 的重复对该统计量无效；
-   任一方法无效即该次重复无效；
+   基线或候选（参与本次比较的方法）的均值分母为 0，该次重复对这一比较无效
+   （2026-10-17 按 T09-E5F 修订：原文"任一方法无效即该次重复无效"）；
 5. Δ* = 基线均值 − 候选均值（同一组权重）；p = (1 + #{有效重复中 Δ* ≤ 0}) ÷ (B_v + 1)；
    B_v < 0.99 B 时方法判为不适用；
 6. 单侧 95% 下界取 Δ* 的第 5 百分位（第 7 型）；Holm 校正按标准程序；
@@ -122,7 +123,7 @@ class Replicate:
     v: tuple[int, ...]
     means: Mapping[str, Decimal | None]  # 量化到 12 位，供报告
     raw_means: Mapping[str, Decimal | None]  # 不量化，供 Δ* 计算
-    valid: bool  # 全部方法的均值都有定义
+    valid: bool  # 诊断：全部方法的均值都有定义；不得控制任何一对方法的检验（T09-E5F）
 
 
 def bootstrap(
@@ -172,11 +173,14 @@ class ImprovementTest:
 def improvement_test(
     replicates: Sequence[Replicate], baseline: str, candidate: str
 ) -> ImprovementTest:
-    """Δ* = 基线均值 − 候选均值；原假设 Δ ≤ 0。"""
+    """Δ* = 基线均值 − 候选均值；原假设 Δ ≤ 0。
+
+    配对有效重复 = 基线与候选的均值都不为空的重复；B_v、Δ*、p、适用性与下界都只用这同一组重复，
+    与其他方法是否有值无关（T09-E5F，FR-01）。Δ* 按重复原顺序输出，配对无效的记为空。"""
     deltas: list[Decimal | None] = []
     for r in replicates:
         b, c = r.raw_means[baseline], r.raw_means[candidate]
-        if not r.valid or b is None or c is None:
+        if b is None or c is None:
             deltas.append(None)
             continue
         with localcontext(EVALUATION_CONTEXT):

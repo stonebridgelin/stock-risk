@@ -13,8 +13,8 @@ L_ep 不可得时 ③ 未知）：
 - known_criteria：已观察部分中已知成立过的条件；first_criteria：首个不利日满足的条件；
 - 原因字段说明输入状况：ATR_UNAVAILABLE、L_EP_UNAVAILABLE、INCOMPLETE_WINDOW
   无论结论是否确定都记入。
-窗口不完整、已观察部分没有已知成立也没有未知的，不利照旧记为否（夹具 B41e、B41f）；
-T09-C1 要求改为未知，与既有夹具冲突，见 T09-C1 回执停止项 C1-01。
+窗口不完整、已观察部分没有已知成立的，不利记为未知（不判定为"否"），原因含 INCOMPLETE_WINDOW
+（T09-E5F 按 C1-01 裁定；夹具 v1.4 的 B41e、B41f 同步）。
 """
 
 from collections.abc import Collection
@@ -78,7 +78,7 @@ def post_signal_window(
         closes = [series.closes[series.index(d)] for d in days]
         drops = [drawdown(c, c_r) for c in closes if c is not None]
         atr_drops = [ratio(c_r - c, a_raw) for c in closes if c is not None] if a_raw else []
-        verdict = _judge(days, closes, c_r, a_raw, l_ep, thresholds)
+        verdict = _judge(days, closes, c_r, a_raw, l_ep, thresholds, len(days) == q)
     if thresholds is None:
         reasons.add("NO_THRESHOLDS")
     reasons |= verdict.reasons
@@ -138,6 +138,7 @@ def _judge(
     a_r: Decimal | None,
     l_ep: Decimal | None,
     th: AdverseThresholds | None,
+    complete: bool,
 ) -> _Verdict:
     """T09-C1 C-05：三个条件分别判定后合成。"""
     if th is None:
@@ -163,6 +164,6 @@ def _judge(
         reasons.add("FIRST_DAY_UNCERTAIN")  # 首个已知成立日之前，有一日存在未知条件
     if known_t:
         return _Verdict(True, first_day, known_t, first, frozenset(reasons))
-    if unknown_any:
+    if unknown_any or not complete:  # 不完整窗口没有已知成立：未知（C1-01）
         return _Verdict(None, None, None, None, frozenset(reasons))
     return _Verdict(False, None, None, None, frozenset(reasons))

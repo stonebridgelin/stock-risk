@@ -76,12 +76,12 @@ def test_case6b_incomplete_window_known_hit_is_adverse() -> None:
     assert "INCOMPLETE_WINDOW" in w.reasons
 
 
-def test_case6a_incomplete_window_without_hit_conflicts_with_b41() -> None:
-    """卡上期望"未知"；既有夹具 B41e、B41f 对不完整、无已知成立的窗口期望"否"。
-    改动会改变既有夹具的期望值（卡第 4 节停止条件），实现保持"否"，见回执停止项 C1-01。"""
+def test_case6a_incomplete_window_without_hit_is_unknown() -> None:
+    """窗口不完整、三日三个条件都已知不成立：未知，原因含 INCOMPLETE_WINDOW
+    （T09-E5F 按 C1-01 裁定恢复 T09-C1 用例 6 第一例的断言；夹具 v1.4 的 B41e、B41f 同步）。"""
     w, _ = _window(["99", "98", "97"], atr=True, q=5, l_ep="95")
     assert not w.complete and "INCOMPLETE_WINDOW" in w.reasons
-    assert w.adverse is False  # 现状（与 B41e、B41f 一致），待产品经理裁定
+    assert w.adverse is None
 
 
 @pytest.mark.parametrize("closes", [["99", "98", "97"], ["98", "70", "72"]])
